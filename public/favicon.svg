@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <path d="M8 6 H56 A4 4 0 0 1 60 10 V54 A4 4 0 0 1 56 58 H8 A4 4 0 0 1 4 54 V10 A4 4 0 0 1 8 6 Z"
+        fill="#FFD54A" stroke="#B8860B" stroke-width="2"/>
+  <path d="M44 6 H56 A4 4 0 0 1 60 10 V22 L44 6 Z" fill="#F5B301"/>
+  <text x="32" y="42" text-anchor="middle" font-family="system-ui, sans-serif" font-weight="700"
+        font-size="30" fill="#3A2E00">W</text>
+</svg>

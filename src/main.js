@@ -50,10 +50,11 @@ function renderBoard() {
   ])
   container.appendChild(header)
 
-  container.appendChild(renderNoteForm())
   const listMount = el('div', { class: 'list-mount' })
-  container.appendChild(renderFilters(listMount))
-  container.appendChild(listMount)
+  const listCol = el('div', { class: 'list-col' }, [renderFilters(listMount), listMount])
+  const formCol = el('div', { class: 'form-col' }, [renderNoteForm()])
+
+  container.appendChild(el('div', { class: 'board-grid' }, [formCol, listCol]))
 
   refreshList(listMount)
 
@@ -186,13 +187,30 @@ function renderNote(note, mount) {
 
   const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
 
+  // textContent only — pasted content is always rendered as plain text, never innerHTML.
+  const contentEl = el('pre', { class: 'note-content', text: note.content })
+  const contentWrap = el('div', { class: 'note-content-wrap' }, [contentEl])
+
+  const isLong = note.content.length > 320
+  if (isLong) {
+    const toggleBtn = el('button', {
+      class: 'expand-toggle',
+      type: 'button',
+      text: '展開',
+      onclick: () => {
+        const expanded = contentWrap.classList.toggle('expanded')
+        toggleBtn.textContent = expanded ? '收合' : '展開'
+      },
+    })
+    contentWrap.appendChild(toggleBtn)
+  }
+
   return el('li', { class: 'note-item' }, [
     el('div', { class: 'note-head' }, [
       el('strong', { text: note.title || '(無標題)' }),
       el('span', { class: 'tag-project', text: note.project_key }),
     ]),
-    // textContent only — pasted content is always rendered as plain text.
-    el('pre', { class: 'note-content', text: note.content }),
+    contentWrap,
     tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
     el('div', { class: 'note-meta', text: '來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString() }),
     el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
