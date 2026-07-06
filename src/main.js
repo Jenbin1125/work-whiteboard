@@ -1,5 +1,6 @@
 import { onAuthChange, signInWithGoogle, signOut } from './auth.js'
 import { PROJECT_KEYS, SOURCE_TYPES, STATUSES, listNotes, createNote, updateStatus, softDelete } from './whiteboard.js'
+import { loadDraft, saveDraft, clearDraft } from './draft.js'
 
 const app = document.getElementById('app')
 
@@ -65,11 +66,33 @@ function renderNoteForm() {
   const titleInput = el('input', { type: 'text', placeholder: '標題（選填）' })
   const contentInput = el('textarea', {
     placeholder: '內容（純文字）',
-    rows: '5',
+    rows: '14',
   })
   const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, k)))
   const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, k)))
   const tagsInput = el('input', { type: 'text', placeholder: '標籤（逗號分隔）' })
+
+  // Restore an in-progress draft (reload / navigate away and back).
+  const draft = loadDraft()
+  if (draft) {
+    titleInput.value = draft.title || ''
+    contentInput.value = draft.content || ''
+    if (PROJECT_KEYS.includes(draft.projectKey)) projectSelect.value = draft.projectKey
+    if (SOURCE_TYPES.includes(draft.sourceType)) sourceSelect.value = draft.sourceType
+    tagsInput.value = draft.tags || ''
+  }
+
+  const persistDraft = () => {
+    saveDraft({
+      title: titleInput.value,
+      content: contentInput.value,
+      projectKey: projectSelect.value,
+      sourceType: sourceSelect.value,
+      tags: tagsInput.value,
+    })
+  }
+  ;[titleInput, contentInput, tagsInput].forEach((input) => input.addEventListener('input', persistDraft))
+  ;[projectSelect, sourceSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
 
   const warning = el('p', {
     class: 'warning',
@@ -102,6 +125,7 @@ function renderNoteForm() {
       titleInput.value = ''
       contentInput.value = ''
       tagsInput.value = ''
+      clearDraft()
       status.textContent = '已新增。'
       const mount = document.querySelector('.list-mount')
       if (mount) refreshList(mount)
