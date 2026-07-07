@@ -1,7 +1,18 @@
 import { onAuthChange, signInWithGoogle, signOut } from './auth.js'
-import { PROJECT_KEYS, SOURCE_TYPES, STATUSES, listNotes, createNote, updateStatus, softDelete, getNoteById } from './whiteboard.js'
+import {
+  PROJECT_KEYS,
+  SOURCE_TYPES,
+  STATUSES,
+  RECIPIENTS,
+  UNSET_RECIPIENT,
+  listNotes,
+  createNote,
+  updateStatus,
+  softDelete,
+  getNoteById,
+} from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
-import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
+import { getNoteIdFromHash, clearNoteHash, onHashChange } from './router.js'
 import { buildReferenceText, copyToClipboard } from './copyReference.js'
 
 const app = document.getElementById('app')
@@ -26,12 +37,16 @@ function option(value, label) {
 }
 
 let currentSession = null
-let filters = { projectKey: '', status: '', tag: '', trash: false }
+let filters = { projectKey: '', status: '', tag: '', trash: false, from: '', to: '' }
 let activeNoteId = null
 let detailPanelEl = null
 let listMountEl = null
 let openMenuCloser = null
 let copyInFlight = false
+// Which rows currently have their Payload accordion open. Keyed by note id
+// so it survives refreshList() rebuilding the DOM (e.g. after a status
+// change or delete on that same row) instead of silently re-collapsing.
+let expandedIds = new Set()
 let toastTimeoutId = null
 
 function render() {
@@ -82,13 +97,14 @@ function renderBoard() {
 }
 
 function renderNoteForm() {
-  const titleInput = el('input', { type: 'text', placeholder: '標題（選填）' })
+  const titleInput = el('input', { type: 'text', placeholder: 'Topic（選填）' })
   const contentInput = el('textarea', {
-    placeholder: '內容（純文字）',
+    placeholder: 'Payload（純文字）',
     rows: '14',
   })
   const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, k)))
   const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, k)))
+  const toSelect = el('select', {}, [option('', '不指定'), ...RECIPIENTS.map((r) => option(r, r))])
   const tagsInput = el('input', { type: 'text', placeholder: '標籤（逗號分隔）' })
 
   // Restore an in-progress draft (reload / navigate away and back).
@@ -98,6 +114,7 @@ function renderNoteForm() {
     contentInput.value = draft.content || ''
     if (PROJECT_KEYS.includes(draft.projectKey)) projectSelect.value = draft.projectKey
     if (SOURCE_TYPES.includes(draft.sourceType)) sourceSelect.value = draft.sourceType
+    if (RECIPIENTS.includes(draft.recipient)) toSelect.value = draft.recipient
     tagsInput.value = draft.tags || ''
   }
 
@@ -107,11 +124,12 @@ function renderNoteForm() {
       content: contentInput.value,
       projectKey: projectSelect.value,
       sourceType: sourceSelect.value,
+      recipient: toSelect.value,
       tags: tagsInput.value,
     })
   }
   ;[titleInput, contentInput, tagsInput].forEach((input) => input.addEventListener('input', persistDraft))
-  ;[projectSelect, sourceSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
+  ;[projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
 
   const warning = el('p', {
     class: 'warning',
@@ -139,10 +157,12 @@ function renderNoteForm() {
         content,
         projectKey: projectSelect.value,
         sourceType: sourceSelect.value,
+        recipient: toSelect.value,
         tags,
       })
       titleInput.value = ''
       contentInput.value = ''
+      toSelect.value = ''
       tagsInput.value = ''
       clearDraft()
       status.textContent = '已新增。'
@@ -152,23 +172,36 @@ function renderNoteForm() {
     }
   }
 
+  const toField = el('label', { class: 'field-label' }, [el('span', { text: 'To' }), toSelect])
+
   const form = el('form', { class: 'note-form', onsubmit: submit }, [
-    el('h2', { text: '貼上筆記' }),
     warning,
     titleInput,
     contentInput,
     el('div', { class: 'row' }, [projectSelect, sourceSelect, tagsInput]),
+    toField,
     el('button', { type: 'submit', text: '新增' }),
     status,
   ])
 
-  return form
+  // Native <details> gives a free, accessible collapse/expand on narrow
+  // screens without extra JS — open by default so desktop is unaffected.
+  // <summary> must be a direct child of <details> or the browser ignores it
+  // and renders its own default "Details" toggle instead.
+  const details = el('details', { class: 'compose-details', open: '' }, [el('summary', { text: '貼上筆記' }), form])
+  return details
 }
 
 function renderFilters(listMount) {
   const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, k))])
   const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, k)), option('extracted', 'extracted')])
   const tagInput = el('input', { type: 'text', placeholder: '依標籤篩選' })
+  const fromInput = el('input', { type: 'text', placeholder: 'From 篩選' })
+  const toSelect = el('select', {}, [
+    option('', '全部收件人'),
+    option(UNSET_RECIPIENT, '未指名'),
+    ...RECIPIENTS.map((r) => option(r, r)),
+  ])
   const trashToggle = el('button', {
     type: 'button',
     class: 'trash-toggle',
@@ -176,26 +209,42 @@ function renderFilters(listMount) {
   })
 
   const apply = () => {
-    filters = { ...filters, projectKey: projectSelect.value, status: statusSelect.value, tag: tagInput.value.trim() }
+    filters = {
+      ...filters,
+      projectKey: projectSelect.value,
+      status: statusSelect.value,
+      tag: tagInput.value.trim(),
+      from: fromInput.value.trim(),
+      to: toSelect.value,
+    }
     refreshList(listMount)
   }
 
   projectSelect.addEventListener('change', apply)
   statusSelect.addEventListener('change', apply)
   tagInput.addEventListener('input', apply)
+  fromInput.addEventListener('input', apply)
+  toSelect.addEventListener('change', apply)
   trashToggle.addEventListener('click', () => {
     filters = { ...filters, trash: !filters.trash }
     trashToggle.textContent = filters.trash ? '返回白板' : '垃圾桶'
     refreshList(listMount)
   })
 
-  return el('div', { class: 'filters' }, [projectSelect, statusSelect, tagInput, trashToggle])
+  return el('div', { class: 'filters' }, [projectSelect, statusSelect, tagInput, fromInput, toSelect, trashToggle])
 }
 
 async function refreshList(mount) {
   mount.replaceChildren(el('p', { text: '載入中…' }))
   try {
-    const notes = await listNotes(filters)
+    const notes = await listNotes({
+      projectKey: filters.projectKey,
+      status: filters.status,
+      tag: filters.tag,
+      trash: filters.trash,
+      fromLabel: filters.from,
+      to: filters.to,
+    })
     mount.replaceChildren(renderList(notes, mount))
     applyHighlight()
   } catch (err) {
@@ -208,14 +257,19 @@ function renderList(notes, mount) {
     return el('p', { text: '目前沒有符合條件的筆記。' })
   }
 
-  const items = notes.map((note) => renderNote(note, mount))
-  return el('ul', { class: 'note-list' }, items)
+  const items = notes.map((note) => renderRow(note, mount))
+  return el('ul', { class: 'wb-list' }, items)
 }
 
-function renderNote(note, mount) {
+// id=429: horizontal inbox row. Collapsed = From/To badges + Topic + time
+// only; clicking anywhere on the row bar (badges, topic, or empty space)
+// expands the full Payload below — same accordion element also carries the
+// status/delete actions that used to sit directly on the card.
+function renderRow(note, mount) {
   const statusSelect = el('select', {}, STATUSES.map((s) => option(s, s)))
   statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
-  statusSelect.addEventListener('change', async () => {
+  statusSelect.addEventListener('change', async (e) => {
+    e.stopPropagation()
     try {
       await updateStatus(note.id, statusSelect.value)
       refreshList(mount)
@@ -224,14 +278,18 @@ function renderNote(note, mount) {
       alert('更新狀態失敗：' + err.message)
     }
   })
+  statusSelect.addEventListener('click', (e) => e.stopPropagation())
 
   const deleteBtn = el('button', {
     class: 'delete-btn',
+    type: 'button',
     text: '刪除',
-    onclick: async () => {
+    onclick: async (e) => {
+      e.stopPropagation()
       if (!confirm('確定刪除這則筆記？')) return
       try {
         await softDelete(note.id)
+        expandedIds.delete(note.id)
         refreshList(mount)
         if (activeNoteId === note.id) syncDetailFromHash()
       } catch (err) {
@@ -243,39 +301,63 @@ function renderNote(note, mount) {
   const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
 
   // textContent only — pasted content is always rendered as plain text, never innerHTML.
-  const contentEl = el('pre', { class: 'note-content', text: note.content })
-  const contentWrap = el('div', { class: 'note-content-wrap' }, [contentEl])
+  const payloadEl = el('pre', { class: 'wb-payload', text: note.content })
 
-  const isLong = note.content.length > 320
-  if (isLong) {
-    const toggleBtn = el('button', {
-      class: 'expand-toggle',
-      type: 'button',
-      text: '展開',
-      onclick: () => {
-        const expanded = contentWrap.classList.toggle('expanded')
-        toggleBtn.textContent = expanded ? '收合' : '展開'
-      },
-    })
-    contentWrap.appendChild(toggleBtn)
-  }
+  const isExpanded = expandedIds.has(note.id)
+  const expandSection = el('div', { class: isExpanded ? 'wb-row-expand' : 'wb-row-expand hidden' }, [
+    payloadEl,
+    tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
+    el(
+      'div',
+      { class: 'note-meta' },
+      [
+        el('span', { class: 'tag-project', text: note.project_key }),
+        el('span', {
+          text: ' 來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString(),
+        }),
+      ]
+    ),
+    el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
+  ])
 
-  const titleBtn = el('button', {
-    class: 'note-title-btn',
-    type: 'button',
-    text: note.title || '(無標題)',
-    onclick: () => navigateToNote(note.id),
-  })
+  const fromBadge = el('span', { class: 'badge badge-from' }, [
+    el('span', { 'aria-hidden': 'true', text: '👤' }),
+    el('span', { text: note.created_by_label || '—' }),
+  ])
+
+  const toBadge = note.recipient
+    ? el('span', { class: 'badge badge-to-set' }, [el('span', { 'aria-hidden': 'true', text: '👤' }), el('span', { text: note.recipient })])
+    : el('span', { class: 'badge-to-unset', text: '未指名' })
+
+  const topicText = note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)'
+  const topicEl = el('span', { class: 'wb-topic', text: topicText })
+
+  const timeEl = el('span', { class: 'wb-time', text: new Date(note.created_at).toLocaleString() })
 
   const menu = buildCardMenu(note)
 
-  return el('li', { class: 'note-item', 'data-note-id': String(note.id) }, [
-    el('div', { class: 'note-head' }, [titleBtn, el('span', { class: 'tag-project', text: note.project_key }), menu]),
-    contentWrap,
-    tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
-    el('div', { class: 'note-meta', text: '來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString() }),
-    el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
-  ])
+  const rowMain = el(
+    'div',
+    { class: 'wb-row-main', role: 'button', tabindex: '0', 'aria-expanded': String(isExpanded) },
+    [fromBadge, toBadge, topicEl, timeEl, menu]
+  )
+
+  const toggle = () => {
+    const nowHidden = expandSection.classList.toggle('hidden')
+    rowMain.setAttribute('aria-expanded', String(!nowHidden))
+    if (nowHidden) expandedIds.delete(note.id)
+    else expandedIds.add(note.id)
+  }
+  rowMain.addEventListener('click', toggle)
+  rowMain.addEventListener('keydown', (e) => {
+    if (e.target !== rowMain) return
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      toggle()
+    }
+  })
+
+  return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, expandSection])
 }
 
 function buildCardMenu(note) {
@@ -382,15 +464,17 @@ function showToast(message) {
 }
 
 // --- deep link (#/note/{id}) + detail panel (id=427 §一) -------------------
+// Independent of the inline row accordion above: a deep link still opens the
+// side drawer / mobile full page, same as before this redesign.
 function applyHighlight() {
   if (!listMountEl) return
-  listMountEl.querySelectorAll('.note-item.highlighted').forEach((n) => n.classList.remove('highlighted'))
+  listMountEl.querySelectorAll('.wb-row.highlighted').forEach((n) => n.classList.remove('highlighted'))
   if (activeNoteId == null) return
-  const card = listMountEl.querySelector(`.note-item[data-note-id="${activeNoteId}"]`)
-  if (card) {
-    card.classList.add('highlighted')
-    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-    setTimeout(() => card.classList.remove('highlighted'), 1600)
+  const row = listMountEl.querySelector(`.wb-row[data-note-id="${activeNoteId}"]`)
+  if (row) {
+    row.classList.add('highlighted')
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    setTimeout(() => row.classList.remove('highlighted'), 1600)
   }
 }
 
