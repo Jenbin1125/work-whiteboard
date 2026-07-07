@@ -13,7 +13,21 @@ import {
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { getNoteIdFromHash, clearNoteHash, onHashChange } from './router.js'
-import { buildReferenceText, copyToClipboard } from './copyReference.js'
+import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
+import {
+  ALLOWED_MIME_TYPES,
+  MAX_FILE_BYTES,
+  MAX_FILES_PER_NOTE,
+  MAX_TOTAL_BYTES_PER_NOTE,
+  IMAGE_MIME_TYPES,
+  TEXT_MIME_TYPES,
+  resolveMimeType,
+  listAttachments,
+  uploadAttachment,
+  retryUpload,
+  softDeleteAttachment,
+  getSignedUrl,
+} from './attachments.js'
 
 const app = document.getElementById('app')
 
@@ -304,7 +318,12 @@ function renderRow(note, mount) {
   const payloadEl = el('pre', { class: 'wb-payload', text: note.content })
 
   const isExpanded = expandedIds.has(note.id)
-  const expandSection = el('div', { class: isExpanded ? 'wb-row-expand' : 'wb-row-expand hidden' }, [
+  // Visibility follows id=430 §九's derivation exactly: a soft-deleted note
+  // (only ever seen here via the trash view) never renders its attachments
+  // section — no separate logic needed, restoring the note just means this
+  // stops being true and the section reappears on its own.
+  const attachments = note.deleted_at ? null : buildAttachmentsSection(note)
+  const expandChildren = [
     payloadEl,
     tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
     el(
@@ -318,7 +337,9 @@ function renderRow(note, mount) {
       ]
     ),
     el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
-  ])
+  ]
+  if (attachments) expandChildren.push(attachments.element)
+  const expandSection = el('div', { class: isExpanded ? 'wb-row-expand' : 'wb-row-expand hidden' }, expandChildren)
 
   const fromBadge = el('span', { class: 'badge badge-from' }, [
     el('span', { 'aria-hidden': 'true', text: '👤' }),
@@ -345,8 +366,12 @@ function renderRow(note, mount) {
   const toggle = () => {
     const nowHidden = expandSection.classList.toggle('hidden')
     rowMain.setAttribute('aria-expanded', String(!nowHidden))
-    if (nowHidden) expandedIds.delete(note.id)
-    else expandedIds.add(note.id)
+    if (nowHidden) {
+      expandedIds.delete(note.id)
+    } else {
+      expandedIds.add(note.id)
+      if (attachments) attachments.load()
+    }
   }
   rowMain.addEventListener('click', toggle)
   rowMain.addEventListener('keydown', (e) => {
@@ -357,7 +382,279 @@ function renderRow(note, mount) {
     }
   })
 
+  // Attachments are queried lazily, only once actually visible (id=431 §一:
+  // never for every row up front — that would slow the whole list down).
+  // If this row survived a refresh already expanded, load immediately.
+  if (isExpanded && attachments) attachments.load()
+
   return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, expandSection])
+}
+
+// --- attachments (id=430/431): lives only inside the row's expanded state,
+// never the collapsed row or the Compose Area — a note must exist first. ---
+function buildAttachmentsSection(note) {
+  const container = el('div', { class: 'wb-attachments-section' })
+  const listEl = el('ul', { class: 'wb-attachment-list' })
+  const counterEl = el('span', { class: 'wba-counter' })
+  const errorEl = el('p', { class: 'wba-error hidden' })
+  const fileInput = el('input', { type: 'file', class: 'hidden', accept: ALLOWED_MIME_TYPES.join(',') })
+  const addBtn = el('button', { type: 'button', class: 'wba-add-btn', text: '+ 新增附件' })
+  const phiNote = el('p', { class: 'wba-phi-note', text: '上傳即表示已確認不含病人可辨識資訊（PHI）' })
+
+  let currentAttachments = []
+
+  function updateCounter() {
+    const totalBytes = currentAttachments.reduce((sum, a) => sum + (a.size_bytes || 0), 0)
+    const totalMb = (totalBytes / (1024 * 1024)).toFixed(1)
+    const capMb = (MAX_TOTAL_BYTES_PER_NOTE / (1024 * 1024)).toFixed(0)
+    counterEl.textContent = `（${currentAttachments.length}/${MAX_FILES_PER_NOTE}・${totalMb}MB/${capMb}MB）`
+  }
+
+  function renderAttachmentList() {
+    updateCounter()
+    if (!currentAttachments.length) {
+      listEl.replaceChildren(el('li', { class: 'wba-empty', text: '尚無附件' }))
+      return
+    }
+    listEl.replaceChildren(...currentAttachments.map((a) => renderAttachmentRow(a, note.id, reload)))
+  }
+
+  async function reload() {
+    listEl.replaceChildren(el('li', { text: '載入中…' }))
+    try {
+      currentAttachments = await listAttachments(note.id)
+      renderAttachmentList()
+    } catch (err) {
+      listEl.replaceChildren(el('li', { class: 'error', text: '載入失敗：' + err.message }))
+    }
+  }
+
+  addBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    fileInput.click()
+  })
+  fileInput.addEventListener('click', (e) => e.stopPropagation())
+  fileInput.addEventListener('change', async (e) => {
+    e.stopPropagation()
+    const file = fileInput.files[0]
+    fileInput.value = ''
+    if (!file) return
+    errorEl.classList.add('hidden')
+
+    // Local whitelist pre-check (id=431 §三) — reject before ever touching
+    // Storage, with a clear inline message (no dialogs, matching the rest of
+    // this app's interaction style).
+    const mimeType = resolveMimeType(file)
+    if (!mimeType) {
+      errorEl.textContent = '這個檔案類型暫不支援上傳，目前支援圖片（PNG/JPEG/WEBP）、PDF 與純文字/Markdown'
+      errorEl.classList.remove('hidden')
+      return
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      errorEl.textContent = '這個檔案超過 10MB 上限，請壓縮或分次上傳'
+      errorEl.classList.remove('hidden')
+      return
+    }
+    if (currentAttachments.length >= MAX_FILES_PER_NOTE) {
+      errorEl.textContent = '這則便利貼最多可附加 5 個檔案'
+      errorEl.classList.remove('hidden')
+      return
+    }
+    const totalBytes = currentAttachments.reduce((sum, a) => sum + (a.size_bytes || 0), 0)
+    if (totalBytes + file.size > MAX_TOTAL_BYTES_PER_NOTE) {
+      errorEl.textContent = '附件總大小已達 25MB 上限'
+      errorEl.classList.remove('hidden')
+      return
+    }
+
+    try {
+      await uploadAttachment({ noteId: note.id, ownerUid: currentSession.user.id, file, mimeType })
+    } catch (err) {
+      errorEl.textContent = '上傳失敗：' + err.message
+      errorEl.classList.remove('hidden')
+    }
+    await reload()
+  })
+
+  container.appendChild(el('div', { class: 'wba-header' }, [el('span', { text: '📎 附件' }), counterEl]))
+  container.appendChild(listEl)
+  container.appendChild(errorEl)
+  container.appendChild(el('div', { class: 'wba-upload-row' }, [addBtn, phiNote]))
+  container.appendChild(fileInput)
+
+  return { element: container, load: reload }
+}
+
+function triggerDownload(url, filename) {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+function buildRetryButton(att, onChanged) {
+  const input = el('input', { type: 'file', class: 'hidden', accept: ALLOWED_MIME_TYPES.join(',') })
+  input.addEventListener('click', (e) => e.stopPropagation())
+  input.addEventListener('change', async (e) => {
+    e.stopPropagation()
+    const file = input.files[0]
+    input.value = ''
+    if (!file) return
+    try {
+      await retryUpload(att, file, resolveMimeType(file) || att.mime_type)
+    } catch (err) {
+      alert('重試上傳失敗：' + err.message)
+    }
+    onChanged()
+  })
+  const btn = el('button', {
+    class: 'wba-action-btn',
+    type: 'button',
+    text: '重試',
+    onclick: (e) => {
+      e.stopPropagation()
+      input.click()
+    },
+  })
+  return el('span', {}, [btn, input])
+}
+
+// TXT/MD: fetched fresh via a throwaway signed URL and rendered with
+// textContent only — HTML-escaped, never parsed as Markdown or executed
+// (id=431 §四).
+function buildTextPreviewToggle(att) {
+  const previewEl = el('pre', { class: 'wba-text-preview hidden' })
+  let loaded = false
+  const btn = el('button', { class: 'wba-action-btn', type: 'button', text: '檢視' })
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    const isHidden = previewEl.classList.contains('hidden')
+    if (!isHidden) {
+      previewEl.classList.add('hidden')
+      btn.textContent = '檢視'
+      return
+    }
+    previewEl.classList.remove('hidden')
+    btn.textContent = '收合'
+    if (!loaded) {
+      previewEl.textContent = '載入中…'
+      try {
+        const url = await getSignedUrl(att.object_path)
+        const res = await fetch(url)
+        previewEl.textContent = await res.text()
+        loaded = true
+      } catch (err) {
+        previewEl.textContent = '載入失敗：' + err.message
+      }
+    }
+  })
+  return { button: btn, preview: previewEl }
+}
+
+function renderAttachmentRow(att, noteId, onChanged) {
+  const nameEl = el('span', { class: 'wba-name', text: att.original_name })
+
+  const copyRefBtn = el('button', {
+    class: 'wba-copy-btn',
+    type: 'button',
+    'aria-label': '複製附件引用',
+    text: '🔗',
+    onclick: async (e) => {
+      e.stopPropagation()
+      try {
+        await copyToClipboard(buildAttachmentReferenceText(noteId, att.original_name))
+        showToast('已複製附件引用')
+      } catch (err) {
+        showToast('複製失敗：' + err.message)
+      }
+    },
+  })
+
+  const deleteBtn = el('button', {
+    class: 'delete-btn',
+    type: 'button',
+    text: '🗑️',
+    'aria-label': '刪除附件',
+    onclick: async (e) => {
+      e.stopPropagation()
+      // Optimistic + no confirm dialog (id=431 §七, matches the rest of the
+      // app's direct-action delete convention); reload restores state if the
+      // request actually failed server-side.
+      li.remove()
+      try {
+        await softDeleteAttachment(att.id)
+      } catch (err) {
+        alert('刪除附件失敗：' + err.message)
+        onChanged()
+      }
+    },
+  })
+
+  let icon
+  let statusEl
+  const actions = []
+  let extraRow = null
+
+  if (att.upload_status === 'ready') {
+    if (IMAGE_MIME_TYPES.includes(att.mime_type)) {
+      icon = el('span', { class: 'wba-thumb-placeholder', text: '🖼️' })
+      getSignedUrl(att.object_path)
+        .then((url) => {
+          const img = el('img', { class: 'wba-thumb', src: url, alt: att.original_name })
+          icon.replaceWith(img)
+        })
+        .catch(() => {
+          icon.textContent = '⚠️'
+        })
+    } else if (att.mime_type === 'application/pdf') {
+      icon = el('span', { 'aria-hidden': 'true', text: '📄' })
+      actions.push(
+        el('button', {
+          class: 'wba-action-btn',
+          type: 'button',
+          text: '⬇️ 下載',
+          onclick: async (e) => {
+            e.stopPropagation()
+            try {
+              const url = await getSignedUrl(att.object_path)
+              triggerDownload(url, att.original_name)
+            } catch (err) {
+              alert('下載失敗：' + err.message)
+            }
+          },
+        })
+      )
+    } else if (TEXT_MIME_TYPES.includes(att.mime_type)) {
+      icon = el('span', { 'aria-hidden': 'true', text: '📝' })
+      const { button, preview } = buildTextPreviewToggle(att)
+      actions.push(button)
+      extraRow = preview
+    } else {
+      icon = el('span', { 'aria-hidden': 'true', text: '📎' })
+    }
+    statusEl = el('span', { class: 'wba-status wba-status-ready', text: 'ready' })
+    actions.push(copyRefBtn, deleteBtn)
+  } else if (att.upload_status === 'failed') {
+    icon = el('span', { 'aria-hidden': 'true', text: '⚠️' })
+    statusEl = el('span', { class: 'wba-status wba-status-failed', text: '上傳失敗' })
+    actions.push(buildRetryButton(att, onChanged), deleteBtn)
+  } else if (att.upload_status === 'delete_pending') {
+    icon = el('span', { 'aria-hidden': 'true', text: '⏳' })
+    statusEl = el('span', { class: 'wba-status wba-status-pending', text: '刪除處理中' })
+  } else if (att.upload_status === 'uploading') {
+    icon = el('span', { 'aria-hidden': 'true', text: '⏳' })
+    statusEl = el('span', { class: 'wba-status', text: '上傳中…' })
+  } else {
+    icon = el('span', { 'aria-hidden': 'true', text: '⏳' })
+    statusEl = el('span', { class: 'wba-status', text: '準備中' })
+  }
+
+  const mainLine = el('div', { class: 'wba-line' }, [icon, nameEl, statusEl, ...actions])
+  const li = el('li', { class: 'wb-attachment' }, extraRow ? [mainLine, extraRow] : [mainLine])
+  if (att.upload_status === 'delete_pending') li.classList.add('wba-delete-pending')
+  return li
 }
 
 function buildCardMenu(note) {

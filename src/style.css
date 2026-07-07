@@ -115,6 +115,62 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 
 .tag-project { font-size: 0.68rem; background: #eef; color: #335; padding: 0.05rem 0.35rem; border-radius: 4px; white-space: nowrap; }
 
+.hidden { display: none; }
+
+/* Attachments (id=430/431): lives only inside the row's expanded state. */
+.wb-attachments-section { border-top: 1px dashed #ddd; margin-top: 0.6rem; padding-top: 0.6rem; }
+.wba-header { display: flex; align-items: baseline; gap: 0.3rem; font-size: 0.8rem; font-weight: 700; margin-bottom: 0.4rem; }
+.wba-counter { font-weight: 400; color: #777; }
+
+.wb-attachment-list { list-style: none; padding: 0; margin: 0 0 0.5rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.wba-empty { font-size: 0.8rem; color: #888; }
+
+.wb-attachment { background: #fff; border: 1px solid #eee; border-radius: 5px; padding: 0.35rem 0.5rem; }
+.wb-attachment.wba-delete-pending { opacity: 0.55; font-style: italic; }
+.wba-line { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; }
+.wba-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wba-thumb, .wba-thumb-placeholder { width: 28px; height: 28px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
+.wba-status { font-size: 0.7rem; color: #777; white-space: nowrap; }
+.wba-status-ready { color: #0f766e; }
+.wba-status-failed { color: #b91c1c; }
+.wba-status-pending { color: #999; }
+
+.wba-action-btn, .wba-copy-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: #555;
+  white-space: nowrap;
+}
+.wba-copy-btn { border: none; padding: 0.15rem 0.3rem; }
+.wba-text-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.8rem;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0.5rem;
+  margin: 0.4rem 0 0;
+}
+
+.wba-error { font-size: 0.78rem; color: #b91c1c; margin: 0.3rem 0; }
+.wba-upload-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.wba-add-btn {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: #333;
+}
+.wba-phi-note { font-size: 0.7rem; color: #888; margin: 0; }
+
 .card-menu { position: relative; }
 .card-menu-btn {
   background: none;

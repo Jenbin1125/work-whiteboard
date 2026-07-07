@@ -15,6 +15,13 @@ export function buildReferenceText(note) {
   return `${firstLine}\n${url}`
 }
 
+// Attachment reference (id=431 §六): plain text only, never the signed URL —
+// signed URLs expire in 5 minutes, so copying one would just paste a dead
+// link. Anyone who needs the file re-opens the note to mint a fresh one.
+export function buildAttachmentReferenceText(noteId, originalName) {
+  return `白板 note #${noteId} 附件：${originalName}`
+}
+
 async function fallbackCopy(text) {
   const textarea = document.createElement('textarea')
   textarea.value = text
