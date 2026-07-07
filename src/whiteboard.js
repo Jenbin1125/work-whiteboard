@@ -8,14 +8,27 @@ export const STATUSES = ['raw', 'triaged', 'archived']
 
 const TABLE = 'work_whiteboard'
 
-export async function listNotes({ projectKey, status, tag } = {}) {
-  let query = supabase.from(TABLE).select('*').is('deleted_at', null).order('created_at', { ascending: false })
+export async function listNotes({ projectKey, status, tag, trash } = {}) {
+  let query = supabase.from(TABLE).select('*')
+  query = trash ? query.not('deleted_at', 'is', null) : query.is('deleted_at', null)
+  query = query.order('created_at', { ascending: false })
 
   if (projectKey) query = query.eq('project_key', projectKey)
   if (status) query = query.eq('status', status)
   if (tag) query = query.contains('tags', [tag])
 
   const { data, error } = await query
+  if (error) throw error
+  return data
+}
+
+// Deep-link lookup: intentionally does NOT filter deleted_at, so callers can
+// tell "soft-deleted" apart from "not found / no permission" (RLS already
+// hides rows the current user doesn't own — a null result covers both
+// nonexistent ids and other people's notes, which is the point: the caller
+// must show the same message for both to avoid id enumeration).
+export async function getNoteById(id) {
+  const { data, error } = await supabase.from(TABLE).select('*').eq('id', id).maybeSingle()
   if (error) throw error
   return data
 }

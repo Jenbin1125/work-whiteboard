@@ -1,6 +1,8 @@
 import { onAuthChange, signInWithGoogle, signOut } from './auth.js'
-import { PROJECT_KEYS, SOURCE_TYPES, STATUSES, listNotes, createNote, updateStatus, softDelete } from './whiteboard.js'
+import { PROJECT_KEYS, SOURCE_TYPES, STATUSES, listNotes, createNote, updateStatus, softDelete, getNoteById } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
+import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
+import { buildReferenceText, copyToClipboard } from './copyReference.js'
 
 const app = document.getElementById('app')
 
@@ -24,11 +26,24 @@ function option(value, label) {
 }
 
 let currentSession = null
-let filters = { projectKey: '', status: '', tag: '' }
+let filters = { projectKey: '', status: '', tag: '', trash: false }
+let activeNoteId = null
+let detailPanelEl = null
+let listMountEl = null
+let openMenuCloser = null
+let copyInFlight = false
+let toastTimeoutId = null
 
 function render() {
   app.replaceChildren()
-  app.appendChild(currentSession ? renderBoard() : renderLogin())
+  detailPanelEl = null
+  listMountEl = null
+  if (currentSession) {
+    app.appendChild(renderBoard())
+    syncDetailFromHash()
+  } else {
+    app.appendChild(renderLogin())
+  }
 }
 
 function renderLogin() {
@@ -52,10 +67,14 @@ function renderBoard() {
   container.appendChild(header)
 
   const listMount = el('div', { class: 'list-mount' })
+  listMountEl = listMount
   const listCol = el('div', { class: 'list-col' }, [renderFilters(listMount), listMount])
   const formCol = el('div', { class: 'form-col' }, [renderNoteForm()])
 
   container.appendChild(el('div', { class: 'board-grid' }, [formCol, listCol]))
+
+  detailPanelEl = el('aside', { class: 'detail-panel hidden', role: 'dialog', 'aria-label': '便利貼詳情' })
+  container.appendChild(detailPanelEl)
 
   refreshList(listMount)
 
@@ -127,8 +146,7 @@ function renderNoteForm() {
       tagsInput.value = ''
       clearDraft()
       status.textContent = '已新增。'
-      const mount = document.querySelector('.list-mount')
-      if (mount) refreshList(mount)
+      if (listMountEl) refreshList(listMountEl)
     } catch (err) {
       status.textContent = '新增失敗：' + err.message
     }
@@ -151,17 +169,27 @@ function renderFilters(listMount) {
   const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, k))])
   const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, k)), option('extracted', 'extracted')])
   const tagInput = el('input', { type: 'text', placeholder: '依標籤篩選' })
+  const trashToggle = el('button', {
+    type: 'button',
+    class: 'trash-toggle',
+    text: filters.trash ? '返回白板' : '垃圾桶',
+  })
 
   const apply = () => {
-    filters = { projectKey: projectSelect.value, status: statusSelect.value, tag: tagInput.value.trim() }
+    filters = { ...filters, projectKey: projectSelect.value, status: statusSelect.value, tag: tagInput.value.trim() }
     refreshList(listMount)
   }
 
   projectSelect.addEventListener('change', apply)
   statusSelect.addEventListener('change', apply)
   tagInput.addEventListener('input', apply)
+  trashToggle.addEventListener('click', () => {
+    filters = { ...filters, trash: !filters.trash }
+    trashToggle.textContent = filters.trash ? '返回白板' : '垃圾桶'
+    refreshList(listMount)
+  })
 
-  return el('div', { class: 'filters' }, [projectSelect, statusSelect, tagInput])
+  return el('div', { class: 'filters' }, [projectSelect, statusSelect, tagInput, trashToggle])
 }
 
 async function refreshList(mount) {
@@ -169,6 +197,7 @@ async function refreshList(mount) {
   try {
     const notes = await listNotes(filters)
     mount.replaceChildren(renderList(notes, mount))
+    applyHighlight()
   } catch (err) {
     mount.replaceChildren(el('p', { class: 'error', text: '載入失敗：' + err.message }))
   }
@@ -190,6 +219,7 @@ function renderNote(note, mount) {
     try {
       await updateStatus(note.id, statusSelect.value)
       refreshList(mount)
+      if (activeNoteId === note.id) syncDetailFromHash()
     } catch (err) {
       alert('更新狀態失敗：' + err.message)
     }
@@ -203,6 +233,7 @@ function renderNote(note, mount) {
       try {
         await softDelete(note.id)
         refreshList(mount)
+        if (activeNoteId === note.id) syncDetailFromHash()
       } catch (err) {
         alert('刪除失敗：' + err.message)
       }
@@ -229,17 +260,251 @@ function renderNote(note, mount) {
     contentWrap.appendChild(toggleBtn)
   }
 
-  return el('li', { class: 'note-item' }, [
-    el('div', { class: 'note-head' }, [
-      el('strong', { text: note.title || '(無標題)' }),
-      el('span', { class: 'tag-project', text: note.project_key }),
-    ]),
+  const titleBtn = el('button', {
+    class: 'note-title-btn',
+    type: 'button',
+    text: note.title || '(無標題)',
+    onclick: () => navigateToNote(note.id),
+  })
+
+  const menu = buildCardMenu(note)
+
+  return el('li', { class: 'note-item', 'data-note-id': String(note.id) }, [
+    el('div', { class: 'note-head' }, [titleBtn, el('span', { class: 'tag-project', text: note.project_key }), menu]),
     contentWrap,
     tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
     el('div', { class: 'note-meta', text: '來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString() }),
     el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
   ])
 }
+
+function buildCardMenu(note) {
+  const wrap = el('div', { class: 'card-menu' })
+  const popover = el('div', { class: 'card-menu-popover hidden' })
+
+  const close = () => {
+    popover.classList.add('hidden')
+    if (openMenuCloser === close) openMenuCloser = null
+  }
+
+  const copyItem = el('button', {
+    class: 'card-menu-item',
+    type: 'button',
+    text: '複製引用',
+    onclick: async (e) => {
+      e.stopPropagation()
+      close()
+      await performCopy(note)
+    },
+  })
+  popover.appendChild(copyItem)
+
+  const menuBtn = el('button', {
+    class: 'card-menu-btn',
+    type: 'button',
+    'aria-label': '更多選項',
+    text: '⋯',
+    onclick: (e) => {
+      e.stopPropagation()
+      const wasHidden = popover.classList.contains('hidden')
+      if (openMenuCloser) openMenuCloser()
+      if (wasHidden) {
+        popover.classList.remove('hidden')
+        openMenuCloser = close
+      }
+    },
+  })
+
+  wrap.appendChild(menuBtn)
+  wrap.appendChild(popover)
+  return wrap
+}
+
+document.addEventListener('click', (e) => {
+  if (openMenuCloser && !e.target.closest('.card-menu')) {
+    openMenuCloser()
+    openMenuCloser = null
+  }
+})
+
+// --- copy-reference (id=427 §二): id + short title + deep link, never the
+// full note content, so a paste into a chat can't leak sensitive content. ---
+async function performCopy(note) {
+  if (copyInFlight) return false
+  copyInFlight = true
+  setTimeout(() => {
+    copyInFlight = false
+  }, 600)
+  try {
+    await copyToClipboard(buildReferenceText(note))
+    showToast('已複製白板引用')
+    return true
+  } catch (err) {
+    showToast('複製失敗：' + err.message)
+    return false
+  }
+}
+
+function showToast(message) {
+  let toastEl = document.querySelector('.wb-toast')
+  if (!toastEl) {
+    toastEl = el('div', { class: 'wb-toast' })
+    document.body.appendChild(toastEl)
+  }
+  toastEl.textContent = message
+  toastEl.classList.add('visible')
+  if (toastTimeoutId) clearTimeout(toastTimeoutId)
+  toastTimeoutId = setTimeout(() => toastEl.classList.remove('visible'), 1500)
+}
+
+// --- deep link (#/note/{id}) + detail panel (id=427 §一) -------------------
+function applyHighlight() {
+  if (!listMountEl) return
+  listMountEl.querySelectorAll('.note-item.highlighted').forEach((n) => n.classList.remove('highlighted'))
+  if (activeNoteId == null) return
+  const card = listMountEl.querySelector(`.note-item[data-note-id="${activeNoteId}"]`)
+  if (card) {
+    card.classList.add('highlighted')
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    setTimeout(() => card.classList.remove('highlighted'), 1600)
+  }
+}
+
+function closeDetailPanel() {
+  if (!detailPanelEl) return
+  detailPanelEl.classList.add('hidden')
+  detailPanelEl.replaceChildren()
+}
+
+function renderDetailShell(bodyChildren) {
+  if (!detailPanelEl) return
+  detailPanelEl.classList.remove('hidden')
+  const closeBtn = el('button', {
+    class: 'detail-close',
+    type: 'button',
+    'aria-label': '關閉詳情',
+    text: '✕',
+    onclick: () => clearNoteHash(),
+  })
+  detailPanelEl.replaceChildren(el('div', { class: 'detail-head' }, [closeBtn]), ...bodyChildren)
+}
+
+function renderDetailLoading() {
+  renderDetailShell([el('p', { text: '載入中…' })])
+}
+
+// Same message for "doesn't exist" and "not yours" — id=427 §一.7: never
+// reveal whether an id exists to someone who can't read it.
+function renderDetailMessage(text) {
+  renderDetailShell([el('p', { class: 'detail-message', text })])
+}
+
+function renderDetailTrashMessage(note) {
+  const goTrash = el('button', {
+    type: 'button',
+    class: 'trash-toggle',
+    text: '前往垃圾桶',
+    onclick: () => {
+      filters = { ...filters, trash: true }
+      if (listMountEl) refreshList(listMountEl)
+    },
+  })
+  renderDetailShell([
+    el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
+    el('p', { class: 'detail-message', text: '此便利貼位於垃圾桶。' }),
+    goTrash,
+  ])
+}
+
+function renderDetailNote(note) {
+  const copyBtn = el('button', {
+    class: 'copy-ref-btn',
+    type: 'button',
+    'aria-label': '複製白板引用',
+    text: '🔗 複製引用',
+  })
+  copyBtn.addEventListener('click', async () => {
+    const ok = await performCopy(note)
+    if (ok) {
+      copyBtn.classList.add('copied')
+      copyBtn.textContent = '✓ 已複製'
+      setTimeout(() => {
+        copyBtn.classList.remove('copied')
+        copyBtn.textContent = '🔗 複製引用'
+      }, 1500)
+    }
+  })
+
+  const statusSelect = el('select', {}, STATUSES.map((s) => option(s, s)))
+  statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
+  statusSelect.addEventListener('change', async () => {
+    try {
+      await updateStatus(note.id, statusSelect.value)
+      if (listMountEl) refreshList(listMountEl)
+      syncDetailFromHash()
+    } catch (err) {
+      alert('更新狀態失敗：' + err.message)
+    }
+  })
+
+  const deleteBtn = el('button', {
+    class: 'delete-btn',
+    type: 'button',
+    text: '刪除',
+    onclick: async () => {
+      if (!confirm('確定刪除這則筆記？')) return
+      try {
+        await softDelete(note.id)
+        if (listMountEl) refreshList(listMountEl)
+        syncDetailFromHash()
+      } catch (err) {
+        alert('刪除失敗：' + err.message)
+      }
+    },
+  })
+
+  const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
+
+  renderDetailShell([
+    copyBtn,
+    el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
+    el('span', { class: 'tag-project', text: note.project_key }),
+    el('pre', { class: 'detail-content', text: note.content }),
+    tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
+    el('div', { class: 'note-meta', text: '來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString() }),
+    el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
+  ])
+}
+
+async function syncDetailFromHash() {
+  if (!currentSession || !detailPanelEl) return
+  const id = getNoteIdFromHash()
+  activeNoteId = id
+  applyHighlight()
+
+  if (id == null) {
+    closeDetailPanel()
+    return
+  }
+
+  renderDetailLoading()
+  try {
+    const note = await getNoteById(id)
+    if (!note) {
+      renderDetailMessage('找不到這則便利貼，或你沒有查看權限。')
+      return
+    }
+    if (note.deleted_at) {
+      renderDetailTrashMessage(note)
+      return
+    }
+    renderDetailNote(note)
+  } catch (err) {
+    renderDetailMessage('載入失敗：' + err.message)
+  }
+}
+
+onHashChange(syncDetailFromHash)
 
 onAuthChange((session) => {
   currentSession = session
