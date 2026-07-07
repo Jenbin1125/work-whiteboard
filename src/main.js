@@ -19,6 +19,7 @@ import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from '
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
 import { statusLabel, projectLabel, sourceLabel, fromLabel, RECIPIENT_GROUPS } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
+import { normalizeTag, displayTag, validateNewTag, getTagStats, rankTagSuggestions } from './tags.js'
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_BYTES,
@@ -64,12 +65,16 @@ function debounce(fn, ms) {
 }
 
 let currentSession = null
-let filters = { projectKey: '', status: '', source: '', tag: '', trash: false, from: '', to: '', search: '' }
+let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '' }
 let activeNoteId = null
 let detailPanelEl = null
 let listMountEl = null
 let openMenuCloser = null
 let copyInFlight = false
+// Set by renderFilters() each time the board renders; lets row-level tag
+// chips (id=433 §三.2) push a tag into the filter state + popover editor
+// without threading the filter closures through renderRow's call chain.
+let addTagFilterFn = null
 // Which rows currently have their Payload accordion open. Keyed by note id
 // so it survives refreshList() rebuilding the DOM (e.g. after a status
 // change or delete on that same row) instead of silently re-collapsing.
@@ -139,7 +144,7 @@ function renderNoteForm({ startOpen }) {
   const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, projectLabel(k))))
   const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, sourceLabel(k))))
   const toSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
-  const tagsInput = el('input', { type: 'text', placeholder: '標籤（逗號分隔）' })
+  const tagEditor = buildTagChipEditor({ initialTags: [], onChange: () => persistDraft() })
 
   // Restore an in-progress draft (reload / navigate away and back).
   const draft = loadDraft()
@@ -150,7 +155,7 @@ function renderNoteForm({ startOpen }) {
     if (PROJECT_KEYS.includes(draft.projectKey)) projectSelect.value = draft.projectKey
     if (SOURCE_TYPES.includes(draft.sourceType)) sourceSelect.value = draft.sourceType
     if (RECIPIENTS.includes(draft.recipient)) toSelect.value = draft.recipient
-    tagsInput.value = draft.tags || ''
+    if (Array.isArray(draft.tags)) tagEditor.setTags(draft.tags)
   } else {
     fromSelect.value = 'Human-Jenbin'
   }
@@ -163,10 +168,10 @@ function renderNoteForm({ startOpen }) {
       projectKey: projectSelect.value,
       sourceType: sourceSelect.value,
       recipient: toSelect.value,
-      tags: tagsInput.value,
+      tags: tagEditor.getTags(),
     })
   }
-  ;[titleInput, contentInput, tagsInput].forEach((input) => input.addEventListener('input', persistDraft))
+  ;[titleInput, contentInput].forEach((input) => input.addEventListener('input', persistDraft))
   ;[fromSelect, projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
 
   const phiNote = el('p', { class: 'phi-inline-note', text: '⚠️ 上傳/送出即表示已確認不含病人可辨識資訊(PHI)、密碼、API key/token，或未經授權的受版權內容。' })
@@ -180,10 +185,7 @@ function renderNoteForm({ startOpen }) {
       status.textContent = '內容不可為空。'
       return
     }
-    const tags = tagsInput.value
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean)
+    const tags = tagEditor.getTags()
 
     submitBtn.disabled = true
     try {
@@ -199,7 +201,7 @@ function renderNoteForm({ startOpen }) {
       titleInput.value = ''
       contentInput.value = ''
       toSelect.value = ''
-      tagsInput.value = ''
+      tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
       clearDraft()
       if (listMountEl) refreshList(listMountEl)
@@ -234,7 +236,7 @@ function renderNoteForm({ startOpen }) {
     labeledField('專案', projectSelect),
     labeledField('來源', sourceSelect),
     labeledField('To', toSelect),
-    labeledField('標籤', tagsInput),
+    tagField(tagEditor),
   ])
   const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields])
 
@@ -272,6 +274,265 @@ function buildRecipientOptions() {
   return opts
 }
 
+// --- tag chip editor (id=433 §一/§二/§六): shared by Compose, the detail
+// edit form, and the filter popover's tag multi-select. -------------------
+function buildTagChipEditor({ initialTags = [], onChange } = {}) {
+  let tags = [...initialTags]
+  let statsCache = null
+  let statsLoaded = false
+
+  const row = el('div', { class: 'tag-chips-row' })
+  const input = el('input', { type: 'text', class: 'tag-chip-input', placeholder: '輸入標籤…' })
+  row.appendChild(input)
+  const dupHint = el('span', { class: 'tag-dup-hint hidden', text: '已經加入這個標籤' })
+  const limitHint = el('span', { class: 'tag-dup-hint hidden' })
+  const suggestionsEl = el('ul', { class: 'tag-suggestions hidden' })
+  const recentEl = el('div', { class: 'tag-recent hidden' })
+
+  function loadStats() {
+    if (statsLoaded) return Promise.resolve(statsCache)
+    return getTagStats()
+      .then((s) => {
+        statsCache = s
+        statsLoaded = true
+        return s
+      })
+      .catch(() => {
+        statsCache = []
+        statsLoaded = true
+        return []
+      })
+  }
+
+  function renderChips() {
+    row.querySelectorAll('.tag-chip').forEach((n) => n.remove())
+    for (const t of tags) {
+      const chip = el('span', { class: 'tag-chip' }, [
+        el('span', { text: displayTag(t) }),
+        el('button', {
+          type: 'button',
+          'aria-label': '移除標籤 ' + displayTag(t),
+          text: '×',
+          onclick: (e) => {
+            e.stopPropagation()
+            tags = tags.filter((x) => x !== t)
+            renderChips()
+            onChange && onChange([...tags])
+          },
+        }),
+      ])
+      row.insertBefore(chip, input)
+    }
+  }
+
+  function flashHint(el2, text) {
+    el2.textContent = text
+    el2.classList.remove('hidden')
+    setTimeout(() => el2.classList.add('hidden'), 1800)
+  }
+
+  function tryAdd(raw) {
+    const result = validateNewTag(raw, tags)
+    if (!result.ok) {
+      if (result.reason === 'duplicate') flashHint(dupHint, '已經加入這個標籤')
+      else if (result.reason === 'too_many') flashHint(limitHint, '每則便利貼最多 8 個標籤')
+      else if (result.reason === 'too_long') flashHint(limitHint, '單一標籤最多 30 字')
+      return false
+    }
+    tags = [...tags, result.tag]
+    renderChips()
+    onChange && onChange([...tags])
+    renderSuggestions()
+    return true
+  }
+
+  function renderSuggestions() {
+    const q = input.value.trim()
+    if (!q || !statsLoaded) {
+      suggestionsEl.classList.add('hidden')
+      suggestionsEl.replaceChildren()
+      return
+    }
+    const ranked = rankTagSuggestions(statsCache, q).filter((s) => !tags.includes(s.tag))
+    const items = ranked.slice(0, 8).map((s) =>
+      el('li', {}, [
+        el('button', {
+          type: 'button',
+          class: 'tag-suggestion-btn',
+          onclick: (e) => {
+            e.stopPropagation()
+            tryAdd(s.tag)
+            input.value = ''
+            suggestionsEl.classList.add('hidden')
+            input.focus()
+          },
+        }, [el('span', { text: displayTag(s.tag) }), el('span', { class: 'tag-suggestion-count', text: s.count + ' 則' })]),
+      ])
+    )
+    const normalizedQ = normalizeTag(q)
+    if (normalizedQ && !ranked.some((s) => s.tag === normalizedQ) && !tags.includes(normalizedQ)) {
+      items.push(
+        el('li', {}, [
+          el('button', {
+            type: 'button',
+            class: 'tag-suggestion-btn tag-suggestion-new',
+            text: `建立新標籤「${q.trim()}」`,
+            onclick: (e) => {
+              e.stopPropagation()
+              tryAdd(q)
+              input.value = ''
+              suggestionsEl.classList.add('hidden')
+              input.focus()
+            },
+          }),
+        ])
+      )
+    }
+    suggestionsEl.replaceChildren(...items)
+    suggestionsEl.classList.toggle('hidden', items.length === 0)
+  }
+
+  function renderRecent() {
+    loadStats().then((stats) => {
+      const recent = [...stats].sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1)).slice(0, 5)
+      if (!recent.length) {
+        recentEl.classList.add('hidden')
+        return
+      }
+      recentEl.replaceChildren(
+        el('span', { class: 'tag-recent-label', text: '最近使用：' }),
+        ...recent.map((s) =>
+          el('button', {
+            type: 'button',
+            class: 'tag-recent-btn',
+            text: displayTag(s.tag),
+            onclick: (e) => {
+              e.stopPropagation()
+              tryAdd(s.tag)
+            },
+          })
+        )
+      )
+      recentEl.classList.remove('hidden')
+    })
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault()
+      const v = input.value.replace(/,$/, '')
+      if (v.trim()) tryAdd(v)
+      input.value = ''
+      renderSuggestions()
+    } else if (e.key === 'Backspace' && !input.value && tags.length) {
+      tags = tags.slice(0, -1)
+      renderChips()
+      onChange && onChange([...tags])
+    }
+  })
+  input.addEventListener('input', renderSuggestions)
+  input.addEventListener('focus', () => {
+    loadStats().then(renderSuggestions)
+  })
+  input.addEventListener('click', (e) => e.stopPropagation())
+
+  renderChips()
+  renderRecent()
+
+  const wrap = el('div', { class: 'tag-chip-editor' }, [row, dupHint, limitHint, suggestionsEl, recentEl])
+
+  return {
+    element: wrap,
+    getTags: () => [...tags],
+    setTags: (next) => {
+      tags = [...next]
+      renderChips()
+    },
+  }
+}
+
+// id=433 §〇/§七: the same mental-model + interaction hint copy, verbatim,
+// wherever the tag editor appears in an editable (non-filter) context.
+function tagField(tagEditor, { label = '標籤（選填）' } = {}) {
+  return el('div', { class: 'field-label field-label-compact tag-field' }, [
+    el('span', { text: label }),
+    tagEditor.element,
+    el('p', { class: 'field-hint', text: '標籤用來跨專案尋找相同主題，例如 NEC、RLS、Storage；不代表收件人或處理狀態。' }),
+    el('p', { class: 'field-hint', text: '用來跨專案尋找主題。輸入後按 Enter，例如 NEC、Level3、Storage；不需輸入 #。' }),
+  ])
+}
+
+// 常用標籤 quick-access block (id=433 §五), used inside the filter popover.
+function buildCommonTagsBlock({ onSelect }) {
+  const listEl = el('ul', { class: 'common-tags-list' })
+  const wrap = el('div', { class: 'common-tags-block' }, [el('div', { class: 'common-tags-title', text: '常用標籤' }), listEl])
+  let expanded = false
+  let stats = []
+
+  function draw() {
+    const sorted = [...stats].sort((a, b) => b.count - a.count)
+    const shown = sorted.slice(0, expanded ? 20 : 5)
+    if (!shown.length) {
+      listEl.replaceChildren(el('li', { class: 'common-tags-empty', text: '尚無標籤資料' }))
+      return
+    }
+    const items = shown.map((s) =>
+      el('li', {}, [
+        el(
+          'button',
+          {
+            type: 'button',
+            class: 'common-tag-btn',
+            onclick: (e) => {
+              e.stopPropagation()
+              onSelect(s.tag)
+            },
+          },
+          [el('span', { text: displayTag(s.tag) }), el('span', { class: 'common-tag-count', text: String(s.count) })]
+        ),
+      ])
+    )
+    if (sorted.length > 5) {
+      items.push(
+        el('li', {}, [
+          el('button', {
+            type: 'button',
+            class: 'common-tags-toggle',
+            text: expanded ? '收合' : '查看全部',
+            onclick: (e) => {
+              e.stopPropagation()
+              expanded = !expanded
+              draw()
+            },
+          }),
+        ])
+      )
+    }
+    listEl.replaceChildren(...items)
+  }
+
+  async function load() {
+    listEl.replaceChildren(el('li', { text: '載入中…' }))
+    try {
+      stats = await getTagStats()
+      draw()
+    } catch (err) {
+      listEl.replaceChildren(el('li', { class: 'error', text: friendlyErrorMessage(err) }))
+    }
+  }
+
+  load()
+  return { element: wrap, reload: load }
+}
+
+// id=433 §四.3: exact empty-result copy for a tag-filtered list.
+function tagsEmptyMessage(tags) {
+  if (!tags || !tags.length) return null
+  const names = tags.map(displayTag)
+  if (names.length === 1) return `沒有包含「${names[0]}」的便利貼。`
+  return `沒有同時包含「${names.join('」與「')}」的便利貼。移除一個標籤試試。`
+}
+
 // --- filters: search bar + popover + active-filter chips (id=432 §六) ------
 function renderFilters(listMount) {
   const searchInput = el('input', { type: 'text', class: 'wb-search', placeholder: '搜尋標題或內容…' })
@@ -287,7 +548,16 @@ function renderFilters(listMount) {
   const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
   const fromInput = el('input', { type: 'text', placeholder: 'From 篩選' })
   const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
-  const tagInput = el('input', { type: 'text', placeholder: '依標籤篩選' })
+
+  const tagFilterEditor = buildTagChipEditor({
+    initialTags: [],
+    onChange: (tags) => {
+      filters = { ...filters, tags }
+      renderChips()
+      refreshList(listMount)
+    },
+  })
+  const commonTagsBlock = buildCommonTagsBlock({ onSelect: (tag) => addTagToFilter(tag) })
 
   const popover = el('div', { class: 'filter-popover hidden' }, [
     labeledField('專案', projectSelect),
@@ -295,14 +565,17 @@ function renderFilters(listMount) {
     labeledField('來源', sourceSelect),
     labeledField('From', fromInput),
     labeledField('To', toSelect),
-    labeledField('標籤', tagInput),
+    labeledField('標籤', tagFilterEditor.element),
+    commonTagsBlock.element,
     el('button', { type: 'button', class: 'clear-filters-btn', text: '清除全部', onclick: clearAllFilters }),
   ])
 
   const chipsRow = el('div', { class: 'filter-chips' })
 
   filterToggle.addEventListener('click', () => {
+    const wasHidden = popover.classList.contains('hidden')
     popover.classList.toggle('hidden')
+    if (wasHidden) commonTagsBlock.reload()
   })
 
   function apply() {
@@ -311,7 +584,6 @@ function renderFilters(listMount) {
       projectKey: projectSelect.value,
       status: statusSelect.value,
       source: sourceSelect.value,
-      tag: tagInput.value.trim(),
       from: fromInput.value.trim(),
       to: toSelect.value,
       search: searchInput.value.trim(),
@@ -327,7 +599,8 @@ function renderFilters(listMount) {
     sourceSelect.value = ''
     fromInput.value = ''
     toSelect.value = ''
-    tagInput.value = ''
+    tagFilterEditor.setTags([])
+    filters = { ...filters, tags: [] }
     apply()
   }
 
@@ -335,6 +608,28 @@ function renderFilters(listMount) {
     control.value = value
     apply()
   }
+
+  // Shared by the popover's own chip editor and row-level tag-chip clicks
+  // (id=433 §三.2) — both must keep filters.tags, the editor's own chips,
+  // and the active-filter chips row in sync.
+  function addTagToFilter(tag) {
+    if (filters.tags.includes(tag)) return
+    const next = [...filters.tags, tag]
+    filters = { ...filters, tags: next }
+    tagFilterEditor.setTags(next)
+    renderChips()
+    refreshList(listMount)
+  }
+
+  function removeTagFromFilter(tag) {
+    const next = filters.tags.filter((t) => t !== tag)
+    filters = { ...filters, tags: next }
+    tagFilterEditor.setTags(next)
+    renderChips()
+    refreshList(listMount)
+  }
+
+  addTagFilterFn = addTagToFilter
 
   function renderChips() {
     const chips = []
@@ -344,7 +639,7 @@ function renderFilters(listMount) {
     if (filters.source) chips.push(['來源: ' + sourceLabel(filters.source), () => clearOne('source', sourceSelect, '')])
     if (filters.from) chips.push(['From: ' + filters.from, () => clearOne('from', fromInput, '')])
     if (filters.to) chips.push(['To: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : filters.to), () => clearOne('to', toSelect, '')])
-    if (filters.tag) chips.push(['標籤: ' + filters.tag, () => clearOne('tag', tagInput, '')])
+    filters.tags.forEach((t) => chips.push(['標籤: ' + displayTag(t), () => removeTagFromFilter(t)]))
 
     chipsRow.replaceChildren(
       ...chips.map(([label, onClear]) =>
@@ -364,8 +659,6 @@ function renderFilters(listMount) {
   const debouncedFrom = debounce(apply, 300)
   fromInput.addEventListener('input', debouncedFrom)
   toSelect.addEventListener('change', apply)
-  const debouncedTag = debounce(apply, 300)
-  tagInput.addEventListener('input', debouncedTag)
 
   trashToggle.addEventListener('click', () => {
     filters = { ...filters, trash: !filters.trash }
@@ -378,7 +671,7 @@ function renderFilters(listMount) {
 }
 
 function hasActiveFilters() {
-  return !!(filters.projectKey || filters.status || filters.source || filters.tag || filters.from || filters.to || filters.search)
+  return !!(filters.projectKey || filters.status || filters.source || filters.from || filters.to || filters.search || (filters.tags && filters.tags.length))
 }
 
 async function refreshList(mount) {
@@ -388,7 +681,7 @@ async function refreshList(mount) {
       projectKey: filters.projectKey,
       status: filters.status,
       sourceType: filters.source,
-      tag: filters.tag,
+      tags: filters.tags,
       trash: filters.trash,
       fromLabel: filters.from,
       to: filters.to,
@@ -407,9 +700,11 @@ function renderList(notes, mount) {
   if (!notes.length) {
     const message = filters.trash
       ? '垃圾桶是空的。'
-      : hasActiveFilters()
-        ? '目前篩選無結果。'
-        : '白板尚無資料，貼上第一則筆記開始吧。'
+      : filters.tags && filters.tags.length
+        ? tagsEmptyMessage(filters.tags)
+        : hasActiveFilters()
+          ? '目前篩選無結果。'
+          : '白板尚無資料，貼上第一則筆記開始吧。'
     return el('p', { class: 'empty-state', text: message })
   }
 
@@ -421,11 +716,31 @@ function renderList(notes, mount) {
 // only; clicking anywhere on the row bar (badges, topic, or empty space)
 // expands the full Payload below — same accordion element also carries the
 // status/delete actions that used to sit directly on the card.
+// id=433 §三: up to 3 clickable tag chips shown even on the collapsed row;
+// clicking applies a filter and must never toggle the row's own expand state.
+function buildRowTagChips(note) {
+  const tags = Array.isArray(note.tags) ? note.tags : []
+  if (!tags.length) return el('div')
+  const shown = tags.slice(0, 3)
+  const overflow = tags.length - shown.length
+  const children = shown.map((t) =>
+    el('button', {
+      type: 'button',
+      class: 'row-tag-chip',
+      text: '#' + displayTag(t),
+      onclick: (e) => {
+        e.stopPropagation()
+        if (addTagFilterFn) addTagFilterFn(t)
+      },
+    })
+  )
+  if (overflow > 0) children.push(el('span', { class: 'row-tag-overflow', text: '+' + overflow }))
+  return el('div', { class: 'wb-row-tags' }, children)
+}
+
 function renderRow(note, mount) {
   const isTrashed = !!note.deleted_at
   const actionsEl = isTrashed ? buildTrashActions(note, mount) : buildNormalActions(note, mount)
-
-  const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
 
   // textContent only — pasted content is always rendered as plain text, never innerHTML.
   const payloadEl = el('pre', { class: 'wb-payload', text: note.content })
@@ -437,7 +752,6 @@ function renderRow(note, mount) {
   const attachments = isTrashed ? null : buildAttachmentsSection(note)
   const expandChildren = [
     payloadEl,
-    tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
     el('div', { class: 'note-meta' }, [
       el('span', { class: 'tag-project', text: projectLabel(note.project_key) }),
       el('span', { text: ' 來源: ' + sourceLabel(note.source_type) + ' ・ ' + formatTimeMeta(note) }),
@@ -493,7 +807,7 @@ function renderRow(note, mount) {
   // If this row survived a refresh already expanded, load immediately.
   if (isExpanded && attachments) attachments.load()
 
-  return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, expandSection])
+  return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, buildRowTagChips(note), expandSection])
 }
 
 function formatTimeMeta(note) {
@@ -1182,7 +1496,7 @@ function renderDetailNote(note, { foundInList } = {}) {
   }
 
   function buildViewBody() {
-    const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
+    const tags = Array.isArray(note.tags) ? note.tags : []
     const statusSelect = el('select', {}, STATUSES.map((s) => option(s, statusLabel(s))))
     statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
     statusSelect.addEventListener('change', async () => {
@@ -1197,10 +1511,18 @@ function renderDetailNote(note, { foundInList } = {}) {
 
     const notInFilterNotice = foundInList === false ? el('p', { class: 'detail-message', text: '此 note 不在目前篩選結果。' }) : el('div')
 
+    const tagsEl = tags.length
+      ? el(
+          'div',
+          { class: 'note-tags' },
+          tags.map((t) => el('span', { class: 'note-tag-pill', text: '#' + displayTag(t) }))
+        )
+      : el('p', { class: 'tag-empty-hint', text: '尚未加入標籤。加入 1–3 個你未來可能用來搜尋這則 note 的主題詞。' })
+
     return el('div', {}, [
       notInFilterNotice,
       el('pre', { class: 'detail-content', text: note.content }),
-      tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
+      tagsEl,
       el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
     ])
   }
@@ -1216,8 +1538,7 @@ function renderDetailNote(note, { foundInList } = {}) {
     sourceSelect.value = note.source_type
     const recipientSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
     recipientSelect.value = note.recipient || ''
-    const tagsInput = el('input', { type: 'text' })
-    tagsInput.value = (note.tags || []).join(', ')
+    const tagEditor = buildTagChipEditor({ initialTags: note.tags || [], onChange: () => scheduleSave() })
 
     const saveStatusEl = el('span', { class: 'save-status' })
     let saveTimer = null
@@ -1230,10 +1551,7 @@ function renderDetailNote(note, { foundInList } = {}) {
         projectKey: projectSelect.value,
         sourceType: sourceSelect.value,
         recipient: recipientSelect.value || null,
-        tags: tagsInput.value
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean),
+        tags: tagEditor.getTags(),
       }
       try {
         await updateNote(note.id, fields)
@@ -1258,7 +1576,7 @@ function renderDetailNote(note, { foundInList } = {}) {
       clearTimeout(saveTimer)
       saveTimer = setTimeout(doSave, 800)
     }
-    ;[titleInput, contentInput, tagsInput].forEach((elm) => elm.addEventListener('input', scheduleSave))
+    ;[titleInput, contentInput].forEach((elm) => elm.addEventListener('input', scheduleSave))
     ;[projectSelect, sourceSelect, recipientSelect].forEach((elm) => elm.addEventListener('change', scheduleSave))
 
     return el('div', { class: 'detail-edit-form' }, [
@@ -1267,7 +1585,7 @@ function renderDetailNote(note, { foundInList } = {}) {
       el('label', { class: 'field-label' }, [el('span', { text: '專案' }), projectSelect]),
       el('label', { class: 'field-label' }, [el('span', { text: '來源' }), sourceSelect]),
       el('label', { class: 'field-label' }, [el('span', { text: 'To' }), recipientSelect]),
-      el('label', { class: 'field-label' }, [el('span', { text: '標籤' }), tagsInput]),
+      tagField(tagEditor, { label: '標籤' }),
       saveStatusEl,
     ])
   }

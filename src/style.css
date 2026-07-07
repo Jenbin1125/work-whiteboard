@@ -318,6 +318,120 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 
 .note-tags, .note-meta { font-size: 0.72rem; color: #666; }
 .note-meta .tag-project { margin-right: 0.4rem; }
+.note-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.4rem 0; }
+.note-tag-pill { background: #eef; color: #335; padding: 0.1rem 0.45rem; border-radius: 999px; }
+.tag-empty-hint { font-size: 0.78rem; color: #888; margin: 0.4rem 0; }
+
+/* Row-level tag chips (id=433 §三): always visible on the collapsed row,
+   clicking applies a filter — never toggles the row's own expand state. */
+.wb-row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; padding: 0 0.75rem 0.5rem; margin-top: -0.3rem; }
+.row-tag-chip {
+  background: #eef0f2;
+  color: #335;
+  border: none;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.row-tag-chip:hover { background: #dfe3e8; }
+.row-tag-overflow { font-size: 0.7rem; color: #888; }
+
+/* Tag chip editor (id=433 §一/§二/§六): shared by Compose, detail edit form,
+   and the filter popover's tag multi-select. */
+.tag-field { position: relative; }
+.field-hint { font-size: 0.72rem; color: #888; margin: 0.2rem 0 0; }
+.tag-chip-editor { position: relative; }
+.tag-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.3rem;
+  background: #fff;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #eef0f2;
+  color: #335;
+  border-radius: 999px;
+  padding: 0.1rem 0.2rem 0.1rem 0.55rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.tag-chip button { background: none; border: none; cursor: pointer; color: #556; font-size: 0.85rem; line-height: 1; padding: 0 0.2rem; }
+.tag-chip-input { flex: 1; min-width: 90px; border: none; outline: none; font-size: 0.85rem; padding: 0.15rem; }
+.tag-dup-hint { font-size: 0.7rem; color: #9a4b00; display: block; margin-top: 0.15rem; }
+.tag-dup-hint.hidden { display: none; }
+.tag-suggestions {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin: 0.2rem 0 0;
+  padding: 0.2rem 0;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.tag-suggestion-btn {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+}
+.tag-suggestion-btn:hover { background: #f2f4f6; }
+.tag-suggestion-count { color: #888; font-size: 0.72rem; white-space: nowrap; }
+.tag-suggestion-new { color: #0f766e; font-style: italic; }
+.tag-recent { font-size: 0.72rem; color: #666; margin-top: 0.3rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.tag-recent.hidden { display: none; }
+.tag-recent-label { color: #888; }
+.tag-recent-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: #335;
+}
+.tag-recent-btn:hover { background: #f2f4f6; }
+
+/* 常用標籤 quick-access block (id=433 §五), inside the filter popover. */
+.common-tags-block { width: 100%; border-top: 1px solid #eee; padding-top: 0.5rem; margin-top: 0.2rem; }
+.common-tags-title { font-size: 0.78rem; font-weight: 700; color: #555; margin-bottom: 0.3rem; }
+.common-tags-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.common-tags-empty { font-size: 0.75rem; color: #888; }
+.common-tag-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #f2f4f6;
+  border: none;
+  border-radius: 999px;
+  padding: 0.15rem 0.35rem 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  color: #335;
+}
+.common-tag-btn:hover { background: #e4e8ec; }
+.common-tag-count { color: #888; font-size: 0.68rem; }
+.common-tags-toggle { background: none; border: 1px solid #ccc; border-radius: 999px; padding: 0.15rem 0.5rem; font-size: 0.72rem; cursor: pointer; color: #555; }
 .note-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; align-items: center; }
 .note-actions select { font-size: 0.78rem; }
 .delete-btn { color: #a00; font-size: 0.78rem; }

@@ -37,7 +37,7 @@ export const UNSET_RECIPIENT = '__unset__'
 
 const TABLE = 'work_whiteboard'
 
-export async function listNotes({ projectKey, status, sourceType, tag, trash, fromLabel, to, search } = {}) {
+export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search } = {}) {
   let query = supabase.from(TABLE).select('*')
   query = trash ? query.not('deleted_at', 'is', null) : query.is('deleted_at', null)
   query = query.order('created_at', { ascending: false })
@@ -45,7 +45,9 @@ export async function listNotes({ projectKey, status, sourceType, tag, trash, fr
   if (projectKey) query = query.eq('project_key', projectKey)
   if (status) query = query.eq('status', status)
   if (sourceType) query = query.eq('source_type', sourceType)
-  if (tag) query = query.contains('tags', [tag])
+  // .contains('tags', [...]) is Postgres array @> — already AND semantics
+  // for however many tags are passed (id=433 §四.2), no extra logic needed.
+  if (tags && tags.length) query = query.contains('tags', tags)
   if (fromLabel) query = query.ilike('created_by_label', `%${fromLabel}%`)
   if (to === UNSET_RECIPIENT) query = query.is('recipient', null)
   else if (to) query = query.eq('recipient', to)
