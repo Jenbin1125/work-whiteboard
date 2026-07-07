@@ -287,17 +287,7 @@ function buildCardMenu(note) {
     if (openMenuCloser === close) openMenuCloser = null
   }
 
-  const copyItem = el('button', {
-    class: 'card-menu-item',
-    type: 'button',
-    text: '複製引用',
-    onclick: async (e) => {
-      e.stopPropagation()
-      close()
-      await performCopy(note)
-    },
-  })
-  popover.appendChild(copyItem)
+  popover.appendChild(buildCopyIconButton(note))
 
   const menuBtn = el('button', {
     class: 'card-menu-btn',
@@ -327,9 +317,43 @@ document.addEventListener('click', (e) => {
   }
 })
 
+// id=427 §七: card-menu entry is icon-only. Feedback lives entirely in the
+// tooltip text + aria-label swap (no toast) — deliberately not closing the
+// popover on click, so the user actually sees the "已複製" state before it
+// closes (via the existing click-outside handler).
+function buildCopyIconButton(note) {
+  const DEFAULT_LABEL = '複製白板引用'
+  const DEFAULT_TOOLTIP = '複製引用'
+
+  const tooltip = el('span', { class: 'copy-tooltip', 'aria-hidden': 'true', text: DEFAULT_TOOLTIP })
+  const icon = el('span', { 'aria-hidden': 'true', text: '🔗' })
+  const btn = el('button', { class: 'copy-icon-btn', type: 'button', 'aria-label': DEFAULT_LABEL })
+  btn.appendChild(icon)
+  btn.appendChild(tooltip)
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    const ok = await performCopy(note, { toast: false })
+    tooltip.textContent = ok ? '已複製' : '複製失敗'
+    btn.setAttribute('aria-label', ok ? '已複製' : '複製失敗')
+    tooltip.classList.add('force-visible')
+    btn.classList.toggle('copied', ok)
+    setTimeout(() => {
+      tooltip.classList.remove('force-visible')
+      tooltip.textContent = DEFAULT_TOOLTIP
+      btn.setAttribute('aria-label', DEFAULT_LABEL)
+      btn.classList.remove('copied')
+    }, 1400)
+  })
+
+  return btn
+}
+
 // --- copy-reference (id=427 §二): id + short title + deep link, never the
 // full note content, so a paste into a chat can't leak sensitive content. ---
-async function performCopy(note) {
+// toast:false is used by the card-menu icon button (id=427 §七), which gives
+// its own inline tooltip feedback instead of the shared toast.
+async function performCopy(note, { toast = true } = {}) {
   if (copyInFlight) return false
   copyInFlight = true
   setTimeout(() => {
@@ -337,10 +361,10 @@ async function performCopy(note) {
   }, 600)
   try {
     await copyToClipboard(buildReferenceText(note))
-    showToast('已複製白板引用')
+    if (toast) showToast('已複製白板引用')
     return true
   } catch (err) {
-    showToast('複製失敗：' + err.message)
+    if (toast) showToast('複製失敗：' + err.message)
     return false
   }
 }

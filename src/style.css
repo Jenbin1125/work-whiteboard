@@ -95,21 +95,50 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   z-index: 20;
-  min-width: 120px;
-  overflow: hidden;
+  padding: 0.15rem;
 }
 .card-menu-popover.hidden { display: none; }
-.card-menu-item {
-  display: block;
-  width: 100%;
-  text-align: left;
+
+/* id=427 §七: icon-only copy-reference entry inside the card ⋯ menu.
+   Feedback is a tooltip + aria-label swap, not a toast (unlike the detail
+   panel's button, which is untouched by this section). */
+.copy-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
   background: none;
   border: none;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8rem;
+  border-radius: 4px;
   cursor: pointer;
+  font-size: 1rem;
+  color: #666;
 }
-.card-menu-item:hover { background: #f2f2f2; }
+.copy-icon-btn:hover { background: #f2f2f2; }
+.copy-icon-btn.copied { color: #0f766e; }
+.copy-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 30;
+}
+.copy-icon-btn:hover .copy-tooltip,
+.copy-icon-btn:focus .copy-tooltip,
+.copy-tooltip.force-visible {
+  opacity: 1;
+}
 
 .note-content-wrap { position: relative; margin: 0.4rem 0; max-height: 160px; overflow-y: auto; }
 .note-content-wrap.expanded { max-height: none; }
