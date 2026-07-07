@@ -7,13 +7,18 @@ import {
   UNSET_RECIPIENT,
   listNotes,
   createNote,
+  updateNote,
   updateStatus,
   softDelete,
+  restoreNote,
+  hardDeleteNote,
   getNoteById,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
-import { getNoteIdFromHash, clearNoteHash, onHashChange } from './router.js'
+import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
+import { statusLabel, projectLabel, sourceLabel, fromLabel, RECIPIENT_GROUPS } from './labels.js'
+import { friendlyErrorMessage } from './friendlyError.js'
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_BYTES,
@@ -50,8 +55,16 @@ function option(value, label) {
   return el('option', { value, text: label })
 }
 
+function debounce(fn, ms) {
+  let t
+  return (...args) => {
+    clearTimeout(t)
+    t = setTimeout(() => fn(...args), ms)
+  }
+}
+
 let currentSession = null
-let filters = { projectKey: '', status: '', tag: '', trash: false, from: '', to: '' }
+let filters = { projectKey: '', status: '', source: '', tag: '', trash: false, from: '', to: '', search: '' }
 let activeNoteId = null
 let detailPanelEl = null
 let listMountEl = null
@@ -62,6 +75,7 @@ let copyInFlight = false
 // change or delete on that same row) instead of silently re-collapsing.
 let expandedIds = new Set()
 let toastTimeoutId = null
+let lastFocusedBeforeDetail = null
 
 function render() {
   app.replaceChildren()
@@ -97,28 +111,34 @@ function renderBoard() {
 
   const listMount = el('div', { class: 'list-mount' })
   listMountEl = listMount
+
+  const isMobile = window.matchMedia('(max-width: 900px)').matches
+  const composeDetails = renderNoteForm({ startOpen: !isMobile })
   const listCol = el('div', { class: 'list-col' }, [renderFilters(listMount), listMount])
-  const formCol = el('div', { class: 'form-col' }, [renderNoteForm()])
+  const formCol = el('div', { class: 'form-col' }, [composeDetails])
 
   container.appendChild(el('div', { class: 'board-grid' }, [formCol, listCol]))
 
-  detailPanelEl = el('aside', { class: 'detail-panel hidden', role: 'dialog', 'aria-label': '便利貼詳情' })
+  detailPanelEl = el('aside', { class: 'detail-panel hidden', 'aria-label': '便利貼詳情' })
   container.appendChild(detailPanelEl)
 
-  refreshList(listMount)
+  refreshList(listMount).then((notes) => {
+    // Mobile: an empty board still opens the compose form so first-time use
+    // isn't a mystery; once notes exist it stays collapsed to keep the inbox
+    // above the fold (id=432 §四).
+    if (isMobile && notes && notes.length === 0) composeDetails.open = true
+  })
 
   return container
 }
 
-function renderNoteForm() {
+function renderNoteForm({ startOpen }) {
+  const contentInput = el('textarea', { placeholder: 'Payload（純文字）', rows: '10' })
   const titleInput = el('input', { type: 'text', placeholder: 'Topic（選填）' })
-  const contentInput = el('textarea', {
-    placeholder: 'Payload（純文字）',
-    rows: '14',
-  })
-  const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, k)))
-  const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, k)))
-  const toSelect = el('select', {}, [option('', '不指定'), ...RECIPIENTS.map((r) => option(r, r))])
+  const fromSelect = el('select', {}, buildRecipientOptions())
+  const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, projectLabel(k))))
+  const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, sourceLabel(k))))
+  const toSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
   const tagsInput = el('input', { type: 'text', placeholder: '標籤（逗號分隔）' })
 
   // Restore an in-progress draft (reload / navigate away and back).
@@ -126,16 +146,20 @@ function renderNoteForm() {
   if (draft) {
     titleInput.value = draft.title || ''
     contentInput.value = draft.content || ''
+    if (RECIPIENTS.includes(draft.createdByLabel)) fromSelect.value = draft.createdByLabel
     if (PROJECT_KEYS.includes(draft.projectKey)) projectSelect.value = draft.projectKey
     if (SOURCE_TYPES.includes(draft.sourceType)) sourceSelect.value = draft.sourceType
     if (RECIPIENTS.includes(draft.recipient)) toSelect.value = draft.recipient
     tagsInput.value = draft.tags || ''
+  } else {
+    fromSelect.value = 'Human-Jenbin'
   }
 
   const persistDraft = () => {
     saveDraft({
       title: titleInput.value,
       content: contentInput.value,
+      createdByLabel: fromSelect.value,
       projectKey: projectSelect.value,
       sourceType: sourceSelect.value,
       recipient: toSelect.value,
@@ -143,17 +167,13 @@ function renderNoteForm() {
     })
   }
   ;[titleInput, contentInput, tagsInput].forEach((input) => input.addEventListener('input', persistDraft))
-  ;[projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
+  ;[fromSelect, projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
 
-  const warning = el('p', {
-    class: 'warning',
-    text: '⚠️ 請勿貼入病人可辨識資訊(PHI)、密碼、API key/token，或未經授權的受版權內容。',
-  })
-
+  const phiNote = el('p', { class: 'phi-inline-note', text: '⚠️ 上傳/送出即表示已確認不含病人可辨識資訊(PHI)、密碼、API key/token，或未經授權的受版權內容。' })
   const status = el('p', { class: 'form-status' })
+  const submitBtn = el('button', { type: 'submit', text: '新增' })
 
-  const submit = async (e) => {
-    e.preventDefault()
+  const doSubmit = async () => {
     status.textContent = ''
     const content = contentInput.value
     if (!content || !content.trim()) {
@@ -165,87 +185,200 @@ function renderNoteForm() {
       .map((t) => t.trim())
       .filter(Boolean)
 
+    submitBtn.disabled = true
     try {
-      await createNote({
+      const newNote = await createNote({
         title: titleInput.value.trim(),
         content,
         projectKey: projectSelect.value,
         sourceType: sourceSelect.value,
         recipient: toSelect.value,
+        createdByLabel: fromSelect.value,
         tags,
       })
       titleInput.value = ''
       contentInput.value = ''
       toSelect.value = ''
       tagsInput.value = ''
+      fromSelect.value = 'Human-Jenbin'
       clearDraft()
-      status.textContent = '已新增。'
       if (listMountEl) refreshList(listMountEl)
+      showToast('已建立便利貼', {
+        actionLabel: '開啟詳情',
+        onAction: () => navigateToNote(newNote.id),
+        duration: 4000,
+      })
     } catch (err) {
-      status.textContent = '新增失敗：' + err.message
+      status.textContent = friendlyErrorMessage(err)
+    } finally {
+      submitBtn.disabled = false
     }
   }
 
-  const toField = el('label', { class: 'field-label' }, [el('span', { text: 'To' }), toSelect])
+  const form = el('form', {
+    class: 'note-form',
+    onsubmit: (e) => {
+      e.preventDefault()
+      doSubmit()
+    },
+    onkeydown: (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault()
+        doSubmit()
+      }
+    },
+  })
 
-  const form = el('form', { class: 'note-form', onsubmit: submit }, [
-    warning,
-    titleInput,
-    contentInput,
-    el('div', { class: 'row' }, [projectSelect, sourceSelect, tagsInput]),
-    toField,
-    el('button', { type: 'submit', text: '新增' }),
-    status,
+  const fromField = el('label', { class: 'field-label' }, [el('span', { text: 'From' }), fromSelect])
+  const moreFields = el('div', { class: 'row' }, [
+    labeledField('專案', projectSelect),
+    labeledField('來源', sourceSelect),
+    labeledField('To', toSelect),
+    labeledField('標籤', tagsInput),
   ])
+  const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields])
+
+  form.appendChild(contentInput)
+  form.appendChild(titleInput)
+  form.appendChild(fromField)
+  form.appendChild(moreDetails)
+  form.appendChild(el('div', { class: 'compose-submit-row' }, [submitBtn, phiNote]))
+  form.appendChild(status)
 
   // Native <details> gives a free, accessible collapse/expand on narrow
-  // screens without extra JS — open by default so desktop is unaffected.
-  // <summary> must be a direct child of <details> or the browser ignores it
-  // and renders its own default "Details" toggle instead.
-  const details = el('details', { class: 'compose-details', open: '' }, [el('summary', { text: '貼上筆記' }), form])
+  // screens without extra JS. <summary> must be a direct child of <details>
+  // or the browser ignores it and renders its own default toggle instead.
+  const details = el('details', { class: 'compose-details' }, [el('summary', { text: '貼上筆記' }), form])
+  if (startOpen) details.open = true
+
+  details.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') details.open = false
+  })
+
   return details
 }
 
+function labeledField(labelText, control) {
+  return el('label', { class: 'field-label field-label-compact' }, [el('span', { text: labelText }), control])
+}
+
+function buildRecipientOptions() {
+  const opts = []
+  for (const group of RECIPIENT_GROUPS) {
+    const optGroup = el('optgroup', { label: group.label })
+    group.values.forEach((v) => optGroup.appendChild(option(v, v)))
+    opts.push(optGroup)
+  }
+  return opts
+}
+
+// --- filters: search bar + popover + active-filter chips (id=432 §六) ------
 function renderFilters(listMount) {
-  const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, k))])
-  const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, k)), option('extracted', 'extracted')])
-  const tagInput = el('input', { type: 'text', placeholder: '依標籤篩選' })
-  const fromInput = el('input', { type: 'text', placeholder: 'From 篩選' })
-  const toSelect = el('select', {}, [
-    option('', '全部收件人'),
-    option(UNSET_RECIPIENT, '未指名'),
-    ...RECIPIENTS.map((r) => option(r, r)),
-  ])
+  const searchInput = el('input', { type: 'text', class: 'wb-search', placeholder: '搜尋標題或內容…' })
+  const filterToggle = el('button', { type: 'button', class: 'filter-toggle', text: '篩選' })
   const trashToggle = el('button', {
     type: 'button',
     class: 'trash-toggle',
     text: filters.trash ? '返回白板' : '垃圾桶',
   })
 
-  const apply = () => {
+  const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, projectLabel(k)))])
+  const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, statusLabel(k)))])
+  const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
+  const fromInput = el('input', { type: 'text', placeholder: 'From 篩選' })
+  const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
+  const tagInput = el('input', { type: 'text', placeholder: '依標籤篩選' })
+
+  const popover = el('div', { class: 'filter-popover hidden' }, [
+    labeledField('專案', projectSelect),
+    labeledField('狀態', statusSelect),
+    labeledField('來源', sourceSelect),
+    labeledField('From', fromInput),
+    labeledField('To', toSelect),
+    labeledField('標籤', tagInput),
+    el('button', { type: 'button', class: 'clear-filters-btn', text: '清除全部', onclick: clearAllFilters }),
+  ])
+
+  const chipsRow = el('div', { class: 'filter-chips' })
+
+  filterToggle.addEventListener('click', () => {
+    popover.classList.toggle('hidden')
+  })
+
+  function apply() {
     filters = {
       ...filters,
       projectKey: projectSelect.value,
       status: statusSelect.value,
+      source: sourceSelect.value,
       tag: tagInput.value.trim(),
       from: fromInput.value.trim(),
       to: toSelect.value,
+      search: searchInput.value.trim(),
     }
+    renderChips()
     refreshList(listMount)
   }
 
+  function clearAllFilters() {
+    searchInput.value = ''
+    projectSelect.value = ''
+    statusSelect.value = ''
+    sourceSelect.value = ''
+    fromInput.value = ''
+    toSelect.value = ''
+    tagInput.value = ''
+    apply()
+  }
+
+  function clearOne(key, control, value) {
+    control.value = value
+    apply()
+  }
+
+  function renderChips() {
+    const chips = []
+    if (filters.search) chips.push(['搜尋: ' + filters.search, () => clearOne('search', searchInput, '')])
+    if (filters.projectKey) chips.push(['專案: ' + projectLabel(filters.projectKey), () => clearOne('projectKey', projectSelect, '')])
+    if (filters.status) chips.push(['狀態: ' + statusLabel(filters.status), () => clearOne('status', statusSelect, '')])
+    if (filters.source) chips.push(['來源: ' + sourceLabel(filters.source), () => clearOne('source', sourceSelect, '')])
+    if (filters.from) chips.push(['From: ' + filters.from, () => clearOne('from', fromInput, '')])
+    if (filters.to) chips.push(['To: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : filters.to), () => clearOne('to', toSelect, '')])
+    if (filters.tag) chips.push(['標籤: ' + filters.tag, () => clearOne('tag', tagInput, '')])
+
+    chipsRow.replaceChildren(
+      ...chips.map(([label, onClear]) =>
+        el('span', { class: 'filter-chip' }, [
+          el('span', { text: label }),
+          el('button', { type: 'button', 'aria-label': '移除篩選', text: '×', onclick: onClear }),
+        ])
+      )
+    )
+  }
+
+  const debouncedApply = debounce(apply, 300)
+  searchInput.addEventListener('input', debouncedApply)
   projectSelect.addEventListener('change', apply)
   statusSelect.addEventListener('change', apply)
-  tagInput.addEventListener('input', apply)
-  fromInput.addEventListener('input', apply)
+  sourceSelect.addEventListener('change', apply)
+  const debouncedFrom = debounce(apply, 300)
+  fromInput.addEventListener('input', debouncedFrom)
   toSelect.addEventListener('change', apply)
+  const debouncedTag = debounce(apply, 300)
+  tagInput.addEventListener('input', debouncedTag)
+
   trashToggle.addEventListener('click', () => {
     filters = { ...filters, trash: !filters.trash }
     trashToggle.textContent = filters.trash ? '返回白板' : '垃圾桶'
     refreshList(listMount)
   })
 
-  return el('div', { class: 'filters' }, [projectSelect, statusSelect, tagInput, fromInput, toSelect, trashToggle])
+  const bar = el('div', { class: 'filter-bar' }, [searchInput, filterToggle, trashToggle])
+  return el('div', { class: 'filters' }, [bar, popover, chipsRow])
+}
+
+function hasActiveFilters() {
+  return !!(filters.projectKey || filters.status || filters.source || filters.tag || filters.from || filters.to || filters.search)
 }
 
 async function refreshList(mount) {
@@ -254,21 +387,30 @@ async function refreshList(mount) {
     const notes = await listNotes({
       projectKey: filters.projectKey,
       status: filters.status,
+      sourceType: filters.source,
       tag: filters.tag,
       trash: filters.trash,
       fromLabel: filters.from,
       to: filters.to,
+      search: filters.search,
     })
     mount.replaceChildren(renderList(notes, mount))
     applyHighlight()
+    return notes
   } catch (err) {
-    mount.replaceChildren(el('p', { class: 'error', text: '載入失敗：' + err.message }))
+    mount.replaceChildren(el('p', { class: 'error', text: friendlyErrorMessage(err) }))
+    return []
   }
 }
 
 function renderList(notes, mount) {
   if (!notes.length) {
-    return el('p', { text: '目前沒有符合條件的筆記。' })
+    const message = filters.trash
+      ? '垃圾桶是空的。'
+      : hasActiveFilters()
+        ? '目前篩選無結果。'
+        : '白板尚無資料，貼上第一則筆記開始吧。'
+    return el('p', { class: 'empty-state', text: message })
   }
 
   const items = notes.map((note) => renderRow(note, mount))
@@ -280,37 +422,8 @@ function renderList(notes, mount) {
 // expands the full Payload below — same accordion element also carries the
 // status/delete actions that used to sit directly on the card.
 function renderRow(note, mount) {
-  const statusSelect = el('select', {}, STATUSES.map((s) => option(s, s)))
-  statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
-  statusSelect.addEventListener('change', async (e) => {
-    e.stopPropagation()
-    try {
-      await updateStatus(note.id, statusSelect.value)
-      refreshList(mount)
-      if (activeNoteId === note.id) syncDetailFromHash()
-    } catch (err) {
-      alert('更新狀態失敗：' + err.message)
-    }
-  })
-  statusSelect.addEventListener('click', (e) => e.stopPropagation())
-
-  const deleteBtn = el('button', {
-    class: 'delete-btn',
-    type: 'button',
-    text: '刪除',
-    onclick: async (e) => {
-      e.stopPropagation()
-      if (!confirm('確定刪除這則筆記？')) return
-      try {
-        await softDelete(note.id)
-        expandedIds.delete(note.id)
-        refreshList(mount)
-        if (activeNoteId === note.id) syncDetailFromHash()
-      } catch (err) {
-        alert('刪除失敗：' + err.message)
-      }
-    },
-  })
+  const isTrashed = !!note.deleted_at
+  const actionsEl = isTrashed ? buildTrashActions(note, mount) : buildNormalActions(note, mount)
 
   const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
 
@@ -319,31 +432,24 @@ function renderRow(note, mount) {
 
   const isExpanded = expandedIds.has(note.id)
   // Visibility follows id=430 §九's derivation exactly: a soft-deleted note
-  // (only ever seen here via the trash view) never renders its attachments
-  // section — no separate logic needed, restoring the note just means this
-  // stops being true and the section reappears on its own.
-  const attachments = note.deleted_at ? null : buildAttachmentsSection(note)
+  // never renders its attachments section — no separate logic needed,
+  // restoring the note just means this stops being true.
+  const attachments = isTrashed ? null : buildAttachmentsSection(note)
   const expandChildren = [
     payloadEl,
     tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
-    el(
-      'div',
-      { class: 'note-meta' },
-      [
-        el('span', { class: 'tag-project', text: note.project_key }),
-        el('span', {
-          text: ' 來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString(),
-        }),
-      ]
-    ),
-    el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
+    el('div', { class: 'note-meta' }, [
+      el('span', { class: 'tag-project', text: projectLabel(note.project_key) }),
+      el('span', { text: ' 來源: ' + sourceLabel(note.source_type) + ' ・ ' + formatTimeMeta(note) }),
+    ]),
+    actionsEl,
   ]
   if (attachments) expandChildren.push(attachments.element)
   const expandSection = el('div', { class: isExpanded ? 'wb-row-expand' : 'wb-row-expand hidden' }, expandChildren)
 
   const fromBadge = el('span', { class: 'badge badge-from' }, [
     el('span', { 'aria-hidden': 'true', text: '👤' }),
-    el('span', { text: note.created_by_label || '—' }),
+    el('span', { text: fromLabel(note.created_by_label) }),
   ])
 
   const toBadge = note.recipient
@@ -390,6 +496,128 @@ function renderRow(note, mount) {
   return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, expandSection])
 }
 
+function formatTimeMeta(note) {
+  const created = new Date(note.created_at)
+  if (note.updated_at && note.updated_at !== note.created_at) {
+    return '更新於 ' + new Date(note.updated_at).toLocaleString()
+  }
+  return created.toLocaleString()
+}
+
+function buildNormalActions(note, mount) {
+  const statusSelect = el('select', {}, STATUSES.map((s) => option(s, statusLabel(s))))
+  statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
+  statusSelect.addEventListener('change', async (e) => {
+    e.stopPropagation()
+    try {
+      await updateStatus(note.id, statusSelect.value)
+      refreshList(mount)
+      if (activeNoteId === note.id) syncDetailFromHash()
+    } catch (err) {
+      showToast(friendlyErrorMessage(err))
+    }
+  })
+  statusSelect.addEventListener('click', (e) => e.stopPropagation())
+
+  const trashBtn = el('button', {
+    class: 'delete-btn',
+    type: 'button',
+    text: '移到垃圾桶',
+    onclick: async (e) => {
+      e.stopPropagation()
+      try {
+        await softDelete(note.id)
+        expandedIds.delete(note.id)
+        refreshList(mount)
+        if (activeNoteId === note.id) syncDetailFromHash()
+        showToast('已移到垃圾桶', {
+          actionLabel: '復原',
+          onAction: async () => {
+            try {
+              await restoreNote(note.id)
+              refreshList(mount)
+            } catch (err) {
+              showToast(friendlyErrorMessage(err))
+            }
+          },
+          duration: 5000,
+        })
+      } catch (err) {
+        showToast(friendlyErrorMessage(err))
+      }
+    },
+  })
+
+  return el('div', { class: 'note-actions' }, [statusSelect, trashBtn])
+}
+
+function buildTrashActions(note, mount) {
+  const restoreBtn = el('button', {
+    class: 'restore-btn',
+    type: 'button',
+    text: '復原',
+    onclick: async (e) => {
+      e.stopPropagation()
+      try {
+        await restoreNote(note.id)
+        refreshList(mount)
+        if (activeNoteId === note.id) syncDetailFromHash()
+        showToast('已復原')
+      } catch (err) {
+        showToast(friendlyErrorMessage(err))
+      }
+    },
+  })
+
+  const permanentDeleteBtn = buildTwoStepButton({
+    label: '永久刪除',
+    confirmLabel: '確定永久刪除？',
+    className: 'permanent-delete-btn',
+    onConfirm: async () => {
+      try {
+        await hardDeleteNote(note.id)
+        refreshList(mount)
+        if (activeNoteId === note.id) clearNoteHash()
+        showToast('已永久刪除')
+      } catch (err) {
+        showToast(friendlyErrorMessage(err))
+      }
+    },
+  })
+
+  return el('div', { class: 'note-actions' }, [restoreBtn, permanentDeleteBtn])
+}
+
+// Two-step in-place confirmation — used only for permanent delete (id=432
+// §二: no native confirm() anywhere, but this one action keeps a deliberate
+// second step). First click arms it for 3s; a second click within that
+// window actually runs; otherwise it silently reverts.
+function buildTwoStepButton({ label, confirmLabel, className, onConfirm }) {
+  let armed = false
+  let revertTimer = null
+  const btn = el('button', { type: 'button', class: className, text: label })
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    if (!armed) {
+      armed = true
+      btn.textContent = confirmLabel
+      btn.classList.add('armed')
+      revertTimer = setTimeout(() => {
+        armed = false
+        btn.textContent = label
+        btn.classList.remove('armed')
+      }, 3000)
+      return
+    }
+    clearTimeout(revertTimer)
+    armed = false
+    btn.textContent = label
+    btn.classList.remove('armed')
+    await onConfirm()
+  })
+  return btn
+}
+
 // --- attachments (id=430/431): lives only inside the row's expanded state,
 // never the collapsed row or the Compose Area — a note must exist first. ---
 function buildAttachmentsSection(note) {
@@ -425,7 +653,7 @@ function buildAttachmentsSection(note) {
       currentAttachments = await listAttachments(note.id)
       renderAttachmentList()
     } catch (err) {
-      listEl.replaceChildren(el('li', { class: 'error', text: '載入失敗：' + err.message }))
+      listEl.replaceChildren(el('li', { class: 'error', text: friendlyErrorMessage(err) }))
     }
   }
 
@@ -470,7 +698,7 @@ function buildAttachmentsSection(note) {
     try {
       await uploadAttachment({ noteId: note.id, ownerUid: currentSession.user.id, file, mimeType })
     } catch (err) {
-      errorEl.textContent = '上傳失敗：' + err.message
+      errorEl.textContent = friendlyErrorMessage(err)
       errorEl.classList.remove('hidden')
     }
     await reload()
@@ -505,7 +733,7 @@ function buildRetryButton(att, onChanged) {
     try {
       await retryUpload(att, file, resolveMimeType(file) || att.mime_type)
     } catch (err) {
-      alert('重試上傳失敗：' + err.message)
+      showToast(friendlyErrorMessage(err))
     }
     onChanged()
   })
@@ -546,7 +774,7 @@ function buildTextPreviewToggle(att) {
         previewEl.textContent = await res.text()
         loaded = true
       } catch (err) {
-        previewEl.textContent = '載入失敗：' + err.message
+        previewEl.textContent = friendlyErrorMessage(err)
       }
     }
   })
@@ -567,7 +795,7 @@ function renderAttachmentRow(att, noteId, onChanged) {
         await copyToClipboard(buildAttachmentReferenceText(noteId, att.original_name))
         showToast('已複製附件引用')
       } catch (err) {
-        showToast('複製失敗：' + err.message)
+        showToast(friendlyErrorMessage(err))
       }
     },
   })
@@ -586,7 +814,7 @@ function renderAttachmentRow(att, noteId, onChanged) {
       try {
         await softDeleteAttachment(att.id)
       } catch (err) {
-        alert('刪除附件失敗：' + err.message)
+        showToast(friendlyErrorMessage(err))
         onChanged()
       }
     },
@@ -621,7 +849,7 @@ function renderAttachmentRow(att, noteId, onChanged) {
               const url = await getSignedUrl(att.object_path)
               triggerDownload(url, att.original_name)
             } catch (err) {
-              alert('下載失敗：' + err.message)
+              showToast(friendlyErrorMessage(err))
             }
           },
         })
@@ -666,6 +894,17 @@ function buildCardMenu(note) {
     if (openMenuCloser === close) openMenuCloser = null
   }
 
+  const openDetailBtn = el('button', {
+    class: 'card-menu-item',
+    type: 'button',
+    text: '開啟詳情',
+    onclick: (e) => {
+      e.stopPropagation()
+      close()
+      navigateToNote(note.id)
+    },
+  })
+  popover.appendChild(openDetailBtn)
   popover.appendChild(buildCopyIconButton(note))
 
   const menuBtn = el('button', {
@@ -743,47 +982,84 @@ async function performCopy(note, { toast = true } = {}) {
     if (toast) showToast('已複製白板引用')
     return true
   } catch (err) {
-    if (toast) showToast('複製失敗：' + err.message)
+    if (toast) showToast(friendlyErrorMessage(err))
     return false
   }
 }
 
-function showToast(message) {
+// Toast (id=432 §十): the one shared, reused element — rapid actions can
+// never stack up more than one. Optional action button supports the 5s
+// trash-undo and the "開啟詳情" shortcut after creating a note.
+function showToast(message, { actionLabel, onAction, duration = 1500 } = {}) {
   let toastEl = document.querySelector('.wb-toast')
   if (!toastEl) {
     toastEl = el('div', { class: 'wb-toast' })
     document.body.appendChild(toastEl)
   }
-  toastEl.textContent = message
+  const children = [el('span', { class: 'wb-toast-msg', text: message })]
+  if (actionLabel && onAction) {
+    children.push(
+      el('button', {
+        class: 'wb-toast-action',
+        type: 'button',
+        text: actionLabel,
+        onclick: () => {
+          onAction()
+          toastEl.classList.remove('visible')
+          if (toastTimeoutId) clearTimeout(toastTimeoutId)
+        },
+      })
+    )
+  }
+  toastEl.replaceChildren(...children)
   toastEl.classList.add('visible')
   if (toastTimeoutId) clearTimeout(toastTimeoutId)
-  toastTimeoutId = setTimeout(() => toastEl.classList.remove('visible'), 1500)
+  toastTimeoutId = setTimeout(() => toastEl.classList.remove('visible'), duration)
 }
 
-// --- deep link (#/note/{id}) + detail panel (id=427 §一) -------------------
+// --- deep link (#/note/{id}) + detail panel (id=427 §一, redesigned id=432 §八) ---
 // Independent of the inline row accordion above: a deep link still opens the
 // side drawer / mobile full page, same as before this redesign.
 function applyHighlight() {
-  if (!listMountEl) return
+  if (!listMountEl) return false
   listMountEl.querySelectorAll('.wb-row.highlighted').forEach((n) => n.classList.remove('highlighted'))
-  if (activeNoteId == null) return
+  if (activeNoteId == null) return false
   const row = listMountEl.querySelector(`.wb-row[data-note-id="${activeNoteId}"]`)
   if (row) {
     row.classList.add('highlighted')
     row.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     setTimeout(() => row.classList.remove('highlighted'), 1600)
+    return true
   }
+  return false
 }
 
 function closeDetailPanel() {
   if (!detailPanelEl) return
   detailPanelEl.classList.add('hidden')
   detailPanelEl.replaceChildren()
+  document.body.classList.remove('body-scroll-locked')
+  if (lastFocusedBeforeDetail && typeof lastFocusedBeforeDetail.focus === 'function') {
+    lastFocusedBeforeDetail.focus()
+  }
+  lastFocusedBeforeDetail = null
 }
 
-function renderDetailShell(bodyChildren) {
+// P0-8: this panel does not implement a full focus trap, so it must not
+// claim role="dialog"/aria-modal — that combination without real modal
+// behavior is exactly the accessibility anti-pattern flagged in GPT's
+// review. It's a non-modal complementary panel instead: Esc closes it and
+// focus moves to/from it, but Tab is free to leave.
+function renderDetailShell(headerChildren = [], bodyChildren = []) {
   if (!detailPanelEl) return
+  const wasHidden = detailPanelEl.classList.contains('hidden')
+  if (wasHidden) {
+    lastFocusedBeforeDetail = document.activeElement
+    document.body.classList.add('body-scroll-locked')
+  }
   detailPanelEl.classList.remove('hidden')
+  detailPanelEl.setAttribute('role', 'region')
+
   const closeBtn = el('button', {
     class: 'detail-close',
     type: 'button',
@@ -791,20 +1067,39 @@ function renderDetailShell(bodyChildren) {
     text: '✕',
     onclick: () => clearNoteHash(),
   })
-  detailPanelEl.replaceChildren(el('div', { class: 'detail-head' }, [closeBtn]), ...bodyChildren)
+  const stickyHeader = el('div', { class: 'detail-sticky-header' }, [closeBtn, ...headerChildren])
+  const scrollBody = el('div', { class: 'detail-scroll-body' }, bodyChildren)
+  detailPanelEl.replaceChildren(stickyHeader, scrollBody)
+
+  if (wasHidden) closeBtn.focus()
 }
 
 function renderDetailLoading() {
-  renderDetailShell([el('p', { text: '載入中…' })])
+  renderDetailShell([], [el('p', { text: '載入中…' })])
 }
 
 // Same message for "doesn't exist" and "not yours" — id=427 §一.7: never
 // reveal whether an id exists to someone who can't read it.
 function renderDetailMessage(text) {
-  renderDetailShell([el('p', { class: 'detail-message', text })])
+  renderDetailShell([], [el('p', { class: 'detail-message', text })])
 }
 
 function renderDetailTrashMessage(note) {
+  const restoreBtn = el('button', {
+    type: 'button',
+    class: 'restore-btn',
+    text: '復原',
+    onclick: async () => {
+      try {
+        await restoreNote(note.id)
+        if (listMountEl) refreshList(listMountEl)
+        syncDetailFromHash()
+        showToast('已復原')
+      } catch (err) {
+        showToast(friendlyErrorMessage(err))
+      }
+    },
+  })
   const goTrash = el('button', {
     type: 'button',
     class: 'trash-toggle',
@@ -814,14 +1109,15 @@ function renderDetailTrashMessage(note) {
       if (listMountEl) refreshList(listMountEl)
     },
   })
-  renderDetailShell([
-    el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
-    el('p', { class: 'detail-message', text: '此便利貼位於垃圾桶。' }),
-    goTrash,
-  ])
+  renderDetailShell(
+    [el('h2', { class: 'detail-title', text: note.title || '(無標題)' })],
+    [el('p', { class: 'detail-message', text: '此便利貼位於垃圾桶。' }), el('div', { class: 'note-actions' }, [restoreBtn, goTrash])]
+  )
 }
 
-function renderDetailNote(note) {
+function renderDetailNote(note, { foundInList } = {}) {
+  let editing = false
+
   const copyBtn = el('button', {
     class: 'copy-ref-btn',
     type: 'button',
@@ -840,58 +1136,179 @@ function renderDetailNote(note) {
     }
   })
 
-  const statusSelect = el('select', {}, STATUSES.map((s) => option(s, s)))
-  statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
-  statusSelect.addEventListener('change', async () => {
-    try {
-      await updateStatus(note.id, statusSelect.value)
-      if (listMountEl) refreshList(listMountEl)
-      syncDetailFromHash()
-    } catch (err) {
-      alert('更新狀態失敗：' + err.message)
-    }
+  const editToggleBtn = el('button', {
+    class: 'edit-toggle-btn',
+    type: 'button',
+    text: editing ? '完成' : '編輯',
+    onclick: () => {
+      editing = !editing
+      draw()
+    },
   })
 
   const deleteBtn = el('button', {
     class: 'delete-btn',
     type: 'button',
-    text: '刪除',
+    text: '移到垃圾桶',
     onclick: async () => {
-      if (!confirm('確定刪除這則筆記？')) return
       try {
         await softDelete(note.id)
         if (listMountEl) refreshList(listMountEl)
+        showToast('已移到垃圾桶', {
+          actionLabel: '復原',
+          onAction: async () => {
+            try {
+              await restoreNote(note.id)
+              if (listMountEl) refreshList(listMountEl)
+              syncDetailFromHash()
+            } catch (err) {
+              showToast(friendlyErrorMessage(err))
+            }
+          },
+          duration: 5000,
+        })
         syncDetailFromHash()
       } catch (err) {
-        alert('刪除失敗：' + err.message)
+        showToast(friendlyErrorMessage(err))
       }
     },
   })
 
-  const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
+  const bodyEl = el('div', { class: 'detail-body' })
 
-  renderDetailShell([
-    copyBtn,
-    el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
-    el('span', { class: 'tag-project', text: note.project_key }),
-    el('pre', { class: 'detail-content', text: note.content }),
-    tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
-    el('div', { class: 'note-meta', text: '來源: ' + note.source_type + ' ・ ' + new Date(note.created_at).toLocaleString() }),
-    el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
-  ])
+  function draw() {
+    editToggleBtn.textContent = editing ? '完成' : '編輯'
+    bodyEl.replaceChildren(editing ? buildEditForm() : buildViewBody())
+  }
+
+  function buildViewBody() {
+    const tagsText = Array.isArray(note.tags) && note.tags.length ? note.tags.join(', ') : ''
+    const statusSelect = el('select', {}, STATUSES.map((s) => option(s, statusLabel(s))))
+    statusSelect.value = STATUSES.includes(note.status) ? note.status : STATUSES[0]
+    statusSelect.addEventListener('change', async () => {
+      try {
+        await updateStatus(note.id, statusSelect.value)
+        note.status = statusSelect.value
+        if (listMountEl) refreshList(listMountEl)
+      } catch (err) {
+        showToast(friendlyErrorMessage(err))
+      }
+    })
+
+    const notInFilterNotice = foundInList === false ? el('p', { class: 'detail-message', text: '此 note 不在目前篩選結果。' }) : el('div')
+
+    return el('div', {}, [
+      notInFilterNotice,
+      el('pre', { class: 'detail-content', text: note.content }),
+      tagsText ? el('div', { class: 'note-tags', text: '標籤: ' + tagsText }) : el('div'),
+      el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
+    ])
+  }
+
+  function buildEditForm() {
+    const titleInput = el('input', { type: 'text', placeholder: 'Topic（選填）' })
+    titleInput.value = note.title || ''
+    const contentInput = el('textarea', { rows: '8' })
+    contentInput.value = note.content
+    const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, projectLabel(k))))
+    projectSelect.value = note.project_key
+    const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, sourceLabel(k))))
+    sourceSelect.value = note.source_type
+    const recipientSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
+    recipientSelect.value = note.recipient || ''
+    const tagsInput = el('input', { type: 'text' })
+    tagsInput.value = (note.tags || []).join(', ')
+
+    const saveStatusEl = el('span', { class: 'save-status' })
+    let saveTimer = null
+
+    async function doSave() {
+      saveStatusEl.textContent = '儲存中…'
+      const fields = {
+        title: titleInput.value.trim(),
+        content: contentInput.value,
+        projectKey: projectSelect.value,
+        sourceType: sourceSelect.value,
+        recipient: recipientSelect.value || null,
+        tags: tagsInput.value
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      }
+      try {
+        await updateNote(note.id, fields)
+        Object.assign(note, {
+          title: fields.title,
+          content: fields.content,
+          project_key: fields.projectKey,
+          source_type: fields.sourceType,
+          recipient: fields.recipient,
+          tags: fields.tags,
+          updated_at: new Date().toISOString(),
+        })
+        saveStatusEl.textContent = '已儲存'
+        if (listMountEl) refreshList(listMountEl)
+      } catch (err) {
+        saveStatusEl.textContent = '儲存失敗（內容仍保留）：' + friendlyErrorMessage(err)
+      }
+    }
+
+    const scheduleSave = () => {
+      saveStatusEl.textContent = '編輯中…'
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(doSave, 800)
+    }
+    ;[titleInput, contentInput, tagsInput].forEach((elm) => elm.addEventListener('input', scheduleSave))
+    ;[projectSelect, sourceSelect, recipientSelect].forEach((elm) => elm.addEventListener('change', scheduleSave))
+
+    return el('div', { class: 'detail-edit-form' }, [
+      el('label', { class: 'field-label' }, [el('span', { text: 'Topic' }), titleInput]),
+      el('label', { class: 'field-label' }, [el('span', { text: 'Payload' }), contentInput]),
+      el('label', { class: 'field-label' }, [el('span', { text: '專案' }), projectSelect]),
+      el('label', { class: 'field-label' }, [el('span', { text: '來源' }), sourceSelect]),
+      el('label', { class: 'field-label' }, [el('span', { text: 'To' }), recipientSelect]),
+      el('label', { class: 'field-label' }, [el('span', { text: '標籤' }), tagsInput]),
+      saveStatusEl,
+    ])
+  }
+
+  draw()
+
+  renderDetailShell(
+    [
+      el('div', { class: 'detail-header-actions' }, [copyBtn, editToggleBtn]),
+      el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
+      el('div', { class: 'detail-badges' }, [
+        el('span', { class: 'badge badge-from' }, [el('span', { text: fromLabel(note.created_by_label) })]),
+        note.recipient
+          ? el('span', { class: 'badge badge-to-set', text: note.recipient })
+          : el('span', { class: 'badge-to-unset', text: '未指名' }),
+        el('span', { class: 'tag-project', text: projectLabel(note.project_key) }),
+      ]),
+      el('p', { class: 'detail-time-meta', text: formatTimeMeta(note) }),
+    ],
+    [bodyEl]
+  )
 }
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && detailPanelEl && !detailPanelEl.classList.contains('hidden')) {
+    clearNoteHash()
+  }
+})
 
 async function syncDetailFromHash() {
   if (!currentSession || !detailPanelEl) return
   const id = getNoteIdFromHash()
   activeNoteId = id
-  applyHighlight()
 
   if (id == null) {
+    applyHighlight()
     closeDetailPanel()
     return
   }
 
+  const foundInList = applyHighlight()
   renderDetailLoading()
   try {
     const note = await getNoteById(id)
@@ -903,9 +1320,9 @@ async function syncDetailFromHash() {
       renderDetailTrashMessage(note)
       return
     }
-    renderDetailNote(note)
+    renderDetailNote(note, { foundInList })
   } catch (err) {
-    renderDetailMessage('載入失敗：' + err.message)
+    renderDetailMessage(friendlyErrorMessage(err))
   }
 }
 

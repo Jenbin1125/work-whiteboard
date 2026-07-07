@@ -25,22 +25,88 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 
 .note-form { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
 .note-form textarea, .note-form input[type="text"] { width: 100%; margin-bottom: 0.6rem; padding: 0.5rem; font-size: 1rem; }
-.note-form textarea { min-height: 260px; resize: vertical; }
+.note-form textarea { min-height: 160px; resize: vertical; }
 .note-form .row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .note-form button[type="submit"] { padding: 0.5rem 1.1rem; font-size: 1rem; cursor: pointer; }
 .warning { color: #9a4b00; font-size: 0.85rem; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; padding: 0.5rem; }
 .form-status { font-size: 0.85rem; color: #555; }
 
-/* Compose area collapses via native <details> — open by default, so
-   desktop behaves exactly as before; mobile users can tap to collapse it. */
+/* Compose area collapses via native <details> — content-first (id=432 §四):
+   Payload → Topic → From, extra classification fields tucked behind a
+   second nested <details>. Open by default on desktop; JS decides the
+   initial state on mobile. */
 .compose-details { margin-bottom: 1.5rem; }
 .compose-details summary { font-weight: 700; font-size: 1.1rem; cursor: pointer; padding: 0.25rem 0; }
 .compose-details .note-form { margin-bottom: 0; margin-top: 0.75rem; }
 .field-label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #555; margin-bottom: 0.6rem; }
-.field-label select { flex: 1; padding: 0.4rem; font-size: 0.9rem; }
+.field-label select, .field-label input { flex: 1; padding: 0.4rem; font-size: 0.9rem; }
+.field-label-compact { flex-direction: column; align-items: stretch; gap: 0.2rem; min-width: 140px; flex: 1; }
 
-.filters { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-.filters select, .filters input { font-size: 0.85rem; padding: 0.3rem 0.4rem; }
+.compose-more { margin: 0.5rem 0; border-top: 1px solid #eee; padding-top: 0.5rem; }
+.compose-more summary { font-size: 0.85rem; color: #555; cursor: pointer; }
+.compose-more .row { margin-top: 0.5rem; }
+
+.compose-submit-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.phi-inline-note { font-size: 0.72rem; color: #888; margin: 0; }
+
+/* Filters (id=432 §六): search bar + collapsible popover + active chips. */
+.filters { margin-bottom: 1rem; }
+.filter-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.wb-search { flex: 1; min-width: 160px; padding: 0.35rem 0.5rem; font-size: 0.85rem; }
+.filter-toggle {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #333;
+}
+.filter-popover {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.filter-popover.hidden { display: none; }
+.filter-popover select, .filter-popover input { font-size: 0.82rem; padding: 0.3rem; }
+.clear-filters-btn {
+  align-self: flex-end;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: #a00;
+}
+
+.filter-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #eef0f2;
+  color: #335;
+  border-radius: 999px;
+  padding: 0.15rem 0.3rem 0.15rem 0.6rem;
+  font-size: 0.75rem;
+}
+.filter-chip button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #556;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+}
+
+.empty-state { color: #777; font-size: 0.9rem; padding: 1rem 0; }
 
 /* Inbox list (id=429): horizontal rows instead of a masonry card wall. */
 .wb-list {
@@ -195,6 +261,19 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   padding: 0.15rem;
 }
 .card-menu-popover.hidden { display: none; }
+.card-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.card-menu-item:hover { background: #f2f2f2; }
 
 /* id=427 §七: icon-only copy-reference entry inside the card ⋯ menu.
    Feedback is a tooltip + aria-label swap, not a toast (unlike the detail
@@ -244,7 +323,7 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 .delete-btn { color: #a00; font-size: 0.78rem; }
 .error { color: #a00; }
 
-.trash-toggle {
+.trash-toggle, .restore-btn {
   background: #fff;
   border: 1px solid #ccc;
   border-radius: 6px;
@@ -253,26 +332,57 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   cursor: pointer;
   color: #555;
 }
+.restore-btn { color: #0f766e; border-color: #99f6e4; }
 
-/* Note detail panel: right-side drawer on desktop, full-page on narrow screens. */
+.permanent-delete-btn {
+  background: #fff;
+  border: 1px solid #f3c2c2;
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #a00;
+}
+.permanent-delete-btn.armed { background: #a00; color: #fff; border-color: #a00; }
+
+/* Note detail panel (id=432 §八): right-side drawer on desktop, full-page on
+   narrow screens. Non-modal complementary panel — no aria-modal/focus trap,
+   see the JS comment on renderDetailShell for why. */
 .detail-panel {
   position: fixed;
   top: 0;
   right: 0;
-  width: 400px;
+  width: min(560px, 100vw);
   max-width: 100%;
   height: 100vh;
   background: #fff;
   box-shadow: -2px 0 14px rgba(0, 0, 0, 0.15);
   overflow-y: auto;
   z-index: 40;
-  padding: 1.25rem;
+  padding: 0 1.25rem 1.25rem;
 }
 .detail-panel.hidden { display: none; }
 @media (max-width: 640px) {
-  .detail-panel { width: 100%; }
+  .detail-panel {
+    width: 100%;
+    padding-left: max(1.25rem, env(safe-area-inset-left));
+    padding-right: max(1.25rem, env(safe-area-inset-right));
+    padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+  }
 }
-.detail-head { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
+body.body-scroll-locked { overflow: hidden; }
+
+.detail-sticky-header {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  padding-top: 1.25rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #eee;
+  z-index: 5;
+}
+.detail-scroll-body { padding-top: 0.75rem; }
+.detail-header-actions { display: flex; justify-content: flex-start; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; padding-right: 2.5rem; }
 .detail-close {
   background: none;
   border: none;
@@ -280,8 +390,23 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   cursor: pointer;
   color: #666;
   padding: 0.3rem 0.5rem;
+  position: absolute;
+  top: 1.25rem;
+  right: 0;
 }
-.detail-title { font-size: 1.1rem; margin: 0.5rem 0 0.25rem; }
+.edit-toggle-btn {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  color: #333;
+  margin-right: 2rem;
+}
+.detail-title { font-size: 1.15rem; margin: 0.25rem 0; padding-right: 2.5rem; }
+.detail-badges { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.3rem; }
+.detail-time-meta { font-size: 0.75rem; color: #888; margin: 0; }
 .detail-content {
   white-space: pre-wrap;
   word-break: break-word;
@@ -291,6 +416,11 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   margin: 0.9rem 0;
 }
 .detail-message { color: #555; }
+
+.detail-edit-form { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.75rem; }
+.detail-edit-form textarea { width: 100%; padding: 0.5rem; font-size: 0.95rem; font-family: inherit; }
+.detail-edit-form select, .detail-edit-form input[type="text"] { width: 100%; padding: 0.4rem; }
+.save-status { font-size: 0.78rem; color: #777; }
 
 .copy-ref-btn {
   display: inline-flex;
@@ -308,12 +438,16 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 }
 .copy-ref-btn.copied { color: #0f766e; border-color: #0f766e; }
 
-/* Toast: single reused element, so rapid clicks can never stack up more than one. */
+/* Toast: single reused element, so rapid clicks can never stack up more than
+   one. Optional action button (5s trash-undo, "開啟詳情" after create). */
 .wb-toast {
   position: fixed;
   bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   background: #f0fdfa;
   color: #0f766e;
   border: 1px solid #99f6e4;
@@ -326,4 +460,14 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   transition: opacity 0.25s ease;
   z-index: 100;
 }
-.wb-toast.visible { opacity: 1; }
+.wb-toast.visible { opacity: 1; pointer-events: auto; }
+.wb-toast-action {
+  background: none;
+  border: 1px solid #0f766e;
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #0f766e;
+  white-space: nowrap;
+}
