@@ -1218,8 +1218,9 @@ function buildCardMenu(note) {
       navigateToNote(note.id)
     },
   })
-  popover.appendChild(openDetailBtn)
+  // id=432 §十一: 複製引用 used more often than 開啟詳情, so it sits above it.
   popover.appendChild(buildCopyIconButton(note))
+  popover.appendChild(openDetailBtn)
 
   const menuBtn = el('button', {
     class: 'card-menu-btn',
