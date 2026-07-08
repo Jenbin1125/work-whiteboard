@@ -66,3 +66,8 @@ export function iconCopy() {
 export function iconChevronRight() {
   return icon([{ d: 'M9 6l6 6-6 6' }])
 }
+
+// id=440: 回覆 (reply) — the classic "corner-up-left" arrow glyph.
+export function iconReply() {
+  return icon([{ d: 'M9 17l-5-5 5-5M4 12h10a5 5 0 015 5v1' }])
+}

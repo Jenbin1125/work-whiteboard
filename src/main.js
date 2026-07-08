@@ -16,15 +16,17 @@ import {
   restoreNote,
   hardDeleteNote,
   getNoteById,
+  searchNotesForReply,
+  listReplies,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
-import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS } from './labels.js'
+import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS, noteTitleOrExcerpt } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
 import { extractFootballPreview } from './footballPreview.js'
 import { normalizeTag, displayTag, validateNewTag, getTagStats, invalidateTagStats, rankTagSuggestions } from './tags.js'
-import { iconUser, iconLink, iconPaperclip, iconTrash, iconCopy, iconChevronRight } from './icons.js'
+import { iconUser, iconLink, iconPaperclip, iconTrash, iconCopy, iconChevronRight, iconReply } from './icons.js'
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILES_PER_NOTE,
@@ -85,6 +87,11 @@ let addTagFilterFn = null
 // of which one triggered the change.
 let setStatusFilterFn = null
 let statusTabsRef = null
+// id=440: set by renderBoard() each render; lets a row's or the detail
+// panel's "回覆" button reach into Compose's reply-target state without
+// threading it through renderRow/renderDetailNote's call chains (same
+// lazy-binding pattern as statusTabsRef/addTagFilterFn above).
+let composeFormRef = null
 // id=434 §八: pagination state for the current filtered view. Reset to page
 // 1 by refreshList(); loadMoreNotes() appends the next page onto this.
 let currentNotes = []
@@ -101,6 +108,7 @@ function render() {
   app.replaceChildren()
   detailPanelEl = null
   listMountEl = null
+  composeFormRef = null
   if (currentSession) {
     app.appendChild(renderBoard())
     syncDetailFromHash()
@@ -177,10 +185,11 @@ function renderBoard() {
   listMountEl = listMount
 
   const isMobile = window.matchMedia('(max-width: 900px)').matches
-  const composeDetails = renderNoteForm({ startOpen: !isMobile })
+  const composeForm = renderNoteForm({ startOpen: !isMobile })
+  composeFormRef = composeForm
   const statusTabs = buildStatusTabs()
   const listCol = el('div', { class: 'list-col' }, [statusTabs.element, renderFilters(listMount), listMount])
-  const formCol = el('div', { class: 'form-col' }, [composeDetails])
+  const formCol = el('div', { class: 'form-col' }, [composeForm.element])
 
   container.appendChild(el('div', { class: 'board-grid' }, [formCol, listCol]))
 
@@ -191,7 +200,7 @@ function renderBoard() {
     // Mobile: an empty board still opens the compose form so first-time use
     // isn't a mystery; once notes exist it stays collapsed to keep the inbox
     // above the fold (id=432 §四).
-    if (isMobile && notes && notes.length === 0) composeDetails.open = true
+    if (isMobile && notes && notes.length === 0) composeForm.element.open = true
   })
 
   return container
@@ -205,6 +214,23 @@ function renderNoteForm({ startOpen }) {
   const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, sourceLabel(k))))
   const toSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
   const tagEditor = buildTagChipEditor({ initialTags: [], onChange: () => persistDraft() })
+
+  // id=440 §一: which existing note (if any) this new note replies to. Not
+  // persisted to the draft (unlike stagedFiles, this IS JSON-serializable,
+  // but a reply relationship surviving a browser refresh days later would
+  // more likely confuse than help — same reasoning as stagedFiles staying
+  // in-memory-only, just for a different underlying reason).
+  let replyTarget = null // { id, label } | null
+  const replyChip = buildReplyChip(() => {
+    replyTarget = null
+    replyChip.render(null)
+  })
+  const replySearch = buildReplySearchField({
+    onSelect: (n) => {
+      replyTarget = { id: n.id, label: noteTitleOrExcerpt(n) }
+      replyChip.render(replyTarget)
+    },
+  })
 
   // Restore an in-progress draft (reload / navigate away and back).
   const draft = loadDraft()
@@ -311,6 +337,7 @@ function renderNoteForm({ startOpen }) {
         recipient: toSelect.value,
         createdByLabel: fromSelect.value,
         tags,
+        replyToNoteId: replyTarget ? replyTarget.id : null,
       })
       titleInput.value = ''
       contentInput.value = ''
@@ -320,6 +347,8 @@ function renderNoteForm({ startOpen }) {
       stagedFiles = []
       renderStagedFiles()
       stagedFilesError.classList.add('hidden')
+      replyTarget = null
+      replyChip.render(null)
       clearDraft()
       invalidateTagStats()
       // id=431 §十一.1: relay-upload now that a note id exists. A failed
@@ -373,9 +402,14 @@ function renderNoteForm({ startOpen }) {
   const fromField = el('label', { class: 'field-label' }, [el('span', { text: '寄' }), fromSelect])
   const toField = el('label', { class: 'field-label' }, [el('span', { text: '收' }), toSelect])
   const moreFields = el('div', { class: 'row' }, [labeledField('專案', projectSelect), labeledField('來源', sourceSelect), tagField(tagEditor)])
+  // id=440 §1.2: manual reply-target search — secondary entry point, lives
+  // in "更多分類" since the primary entry is a row/detail "回覆" button
+  // (see startReply() below). No excludeId: a brand-new note has no id of
+  // its own yet, so there's nothing to self-exclude.
+  const replyField = el('label', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replySearch])
   // "更多分類"'s own border-top already reads as the spec's divider line
   // above it — no separate <hr> needed.
-  const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields])
+  const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields, replyField])
 
   // id=435 §一.1/§四: Topic -> Payload -> 寄 -> 收 -> 送出(靠右) -> 更多分類.
   // This is an explicit Human-directed reversal of id=432 §四's
@@ -383,6 +417,10 @@ function renderNoteForm({ startOpen }) {
   // spec, id=432 §四's ordering description is superseded by this. The PHI
   // warning that used to sit here is gone entirely (id=435 §四.4/§五 moved
   // it to the page header instead — see renderBoard()).
+  // id=440 §一: visible confirmation of the current reply target, shown
+  // above every field so it's the first thing seen after the row/detail
+  // "回覆" button opens Compose — hidden entirely when not replying.
+  form.appendChild(replyChip.element)
   form.appendChild(titleInput)
   form.appendChild(contentInput)
   form.appendChild(fromField)
@@ -405,11 +443,110 @@ function renderNoteForm({ startOpen }) {
     if (e.key === 'Escape') details.open = false
   })
 
-  return details
+  // id=440 §1.1: primary reply entry point, called from a row's or the
+  // detail panel's "回覆" button. Sets the internal reply-target state
+  // (never a raw id shown to the user — the chip renders the note's title
+  // instead), opens Compose, and scrolls/focuses it so the response to
+  // clicking "回覆" is immediately visible rather than a silent state
+  // change somewhere off-screen (relevant on mobile, where Compose starts
+  // collapsed and the list can be scrolled well past it).
+  function startReply(note) {
+    replyTarget = { id: note.id, label: noteTitleOrExcerpt(note) }
+    replyChip.render(replyTarget)
+    // Reply target's spec text labels this a prefill convenience, not a
+    // hard link — only apply it if the user hasn't already chosen a 收
+    // value for an in-progress draft, so this never clobbers their pick.
+    if (!toSelect.value && note.created_by_label && RECIPIENTS.includes(note.created_by_label)) {
+      toSelect.value = note.created_by_label
+      persistDraft()
+    }
+    details.open = true
+    details.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    contentInput.focus()
+  }
+
+  return { element: details, startReply }
 }
 
 function labeledField(labelText, control) {
   return el('label', { class: 'field-label field-label-compact' }, [el('span', { text: labelText }), control])
+}
+
+// id=440 §1.2: shared "回覆對象" manual search input + results list. Purely
+// presentational — selecting a result calls onSelect(note); the caller owns
+// the actual reply-target state, since Compose and the detail edit form
+// each have a different chip placement/lifecycle for it. excludeId is the
+// note being edited (if any), so it can't select itself as its own parent.
+// This is a plain click-to-select list, not a full ARIA combobox like the
+// tag editor's (id=434 §二) — arrow-key roving wasn't in id=440's
+// acceptance checklist, so it's out of scope for this pass.
+function buildReplySearchField({ excludeId, onSelect } = {}) {
+  const searchInput = el('input', { type: 'text', placeholder: '搜尋標題或 id…', 'aria-label': '搜尋回覆對象' })
+  const resultsEl = el('ul', { class: 'reply-search-results hidden' })
+
+  const closeResults = () => {
+    resultsEl.classList.add('hidden')
+    resultsEl.replaceChildren()
+  }
+
+  const runSearch = debounce(async () => {
+    const q = searchInput.value.trim()
+    if (!q) return closeResults()
+    let results
+    try {
+      results = await searchNotesForReply(q, { excludeId })
+    } catch {
+      return closeResults()
+    }
+    resultsEl.replaceChildren(
+      ...(results.length
+        ? results.map((n) =>
+            el('li', {}, [
+              el('button', {
+                type: 'button',
+                text: `#${n.id} ${noteTitleOrExcerpt(n)}`,
+                onclick: () => {
+                  closeResults()
+                  searchInput.value = ''
+                  onSelect(n)
+                },
+              }),
+            ])
+          )
+        : [el('li', { class: 'reply-search-empty', text: '找不到符合的 note' })])
+    )
+    resultsEl.classList.remove('hidden')
+  }, 300)
+  searchInput.addEventListener('input', runSearch)
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      closeResults()
+    }
+  })
+
+  return el('div', { class: 'reply-search-field' }, [searchInput, resultsEl])
+}
+
+// id=440: shared reply-target chip — shows what a note (new or existing)
+// is currently set to reply to, with a clear (×) button. Compose and the
+// detail edit form each own their own target state and pass it a setter.
+function buildReplyChip(onClear) {
+  const chipEl = el('div', { class: 'reply-target-chip hidden' })
+  function render(target) {
+    if (!target) {
+      chipEl.classList.add('hidden')
+      chipEl.replaceChildren()
+      return
+    }
+    chipEl.classList.remove('hidden')
+    chipEl.replaceChildren(
+      iconReply(),
+      el('span', { text: `回覆：#${target.id} ${target.label}` }),
+      el('button', { type: 'button', 'aria-label': '取消回覆對象', text: '×', onclick: onClear })
+    )
+  }
+  return { element: chipEl, render }
 }
 
 // id=434 §三.1: Chinese name as the primary label, canonical value as a
@@ -1101,9 +1238,7 @@ function renderRow(note, mount) {
   // while the task line is what a recipient actually needs to judge
   // relevance at a glance. Non-🏈 notes, and 🏈 notes where extraction
   // fails, keep the exact prior fallback (id=438 §一.2 優雅降級).
-  const topicText =
-    extractFootballPreview(note.content) ||
-    (note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)')
+  const topicText = extractFootballPreview(note.content) || noteTitleOrExcerpt(note)
   const topicEl = el('span', { class: 'wb-topic', text: topicText })
   // id=435 §四.1: reverts §三.3 — tags go back to their own line below
   // Topic (Human found the shared-line width too cramped in practice).
@@ -1614,7 +1749,19 @@ function buildRowActionIcons(note) {
       navigateToNote(note.id)
     },
   })
-  return el('div', { class: 'row-actions' }, [copyLinkBtn, copyContentBtn, openDetailBtn])
+  // id=440 §一.1: primary reply entry point at the row level. Placed after
+  // 開啟詳情 (not grouped with the two copy actions) since it's a
+  // do-something-new action, not a copy — no ordering was specified in the
+  // spec, this is CC's call.
+  const replyBtn = buildIconAction({
+    icon: iconReply(),
+    label: '回覆',
+    className: 'copy-icon-btn row-icon-nav',
+    onActivate: () => {
+      if (composeFormRef) composeFormRef.startReply(note)
+    },
+  })
+  return el('div', { class: 'row-actions' }, [copyLinkBtn, copyContentBtn, openDetailBtn, replyBtn])
 }
 
 // --- copy-reference (id=427 §二): id + short title + deep link, never the
@@ -1767,8 +1914,75 @@ function renderDetailTrashMessage(note) {
   )
 }
 
+// id=440 §2: fills in a detail note's backward ("回覆自") and forward
+// ("此則有 N 則回覆") links once their queries resolve. The two lookups are
+// independent — a failure in one (e.g. the parent lookup, if it somehow
+// errors) must never suppress the other, so each has its own try/catch
+// rather than one wrapping both.
+async function loadReplyInfo(note, container) {
+  const children = []
+  if (note.reply_to_note_id) {
+    try {
+      const parent = await getNoteById(note.reply_to_note_id)
+      // No special-casing for a hard-deleted parent: ON DELETE SET NULL
+      // (id=439 §三) already means reply_to_note_id itself becomes NULL in
+      // that case, so this branch is simply unreached — exactly id=440
+      // §2.1's "此區塊自然不顯示，無需額外處理殘留狀態".
+      if (parent) {
+        children.push(
+          el('p', { class: 'reply-back-link' }, [
+            el('button', {
+              type: 'button',
+              class: 'reply-link-btn',
+              text: `↩ 回覆自 note #${parent.id}｜${noteTitleOrExcerpt(parent)}`,
+              onclick: () => navigateToNote(parent.id),
+            }),
+          ])
+        )
+      }
+    } catch {
+      // supplementary info — never blocks the rest of the detail panel.
+    }
+  }
+  try {
+    const replies = await listReplies(note.id)
+    if (replies.length) {
+      children.push(
+        el('div', { class: 'reply-forward-list' }, [
+          el('p', { class: 'reply-forward-heading', text: `此則有 ${replies.length} 則回覆` }),
+          el(
+            'ul',
+            {},
+            replies.map((r) =>
+              el('li', {}, [
+                el('button', {
+                  type: 'button',
+                  class: 'reply-link-btn',
+                  text: `${noteTitleOrExcerpt(r)}｜${new Date(r.created_at).toLocaleString()}`,
+                  onclick: () => navigateToNote(r.id),
+                }),
+              ])
+            )
+          ),
+        ])
+      )
+    }
+  } catch {
+    // same reasoning — supplementary, never blocking.
+  }
+  container.replaceChildren(...children)
+}
+
 function renderDetailNote(note, { foundInList } = {}) {
   let editing = false
+
+  // id=440 §一.1: 詳情頁's own reply entry point — same startReply() as the
+  // row-level icon, just triggered from here instead.
+  const replyBtn = el(
+    'button',
+    { class: 'reply-btn', type: 'button', onclick: () => composeFormRef && composeFormRef.startReply(note) },
+    [iconReply(), el('span', { text: '回覆' })]
+  )
 
   const copyBtnLabel = el('span', { text: '複製引用' })
   const copyBtn = el('button', { class: 'copy-ref-btn', type: 'button', 'aria-label': '複製白板引用' }, [iconLink(), copyBtnLabel])
@@ -1856,10 +2070,17 @@ function renderDetailNote(note, { foundInList } = {}) {
         )
       : el('p', { class: 'tag-empty-hint', text: '尚未加入標籤。加入 1–3 個你未來可能用來搜尋這則 note 的主題詞。' })
 
+    // id=440 §2: bidirectional reply links, loaded async (two separate
+    // queries) — starts empty so there's no flash of "0 replies", and N=0
+    // for the forward list means the block just never appears (§2.2).
+    const replyInfoEl = el('div', { class: 'reply-info' })
+    loadReplyInfo(note, replyInfoEl)
+
     return el('div', {}, [
       notInFilterNotice,
       el('pre', { class: 'detail-content', text: note.content }),
       tagsEl,
+      replyInfoEl,
       el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
     ])
   }
@@ -1877,6 +2098,38 @@ function renderDetailNote(note, { foundInList } = {}) {
     recipientSelect.value = note.recipient || ''
     const tagEditor = buildTagChipEditor({ initialTags: note.tags || [], onChange: () => scheduleSave() })
 
+    // id=440 §1.2: editing an existing note's reply target, self-excluded
+    // (excludeId: note.id) so it can't be set to reply to itself. Shows a
+    // placeholder "#N" immediately (never nothing — the raw id is a valid,
+    // if unfriendly, identifier while the real title loads), then swaps in
+    // the resolved title once the async lookup returns.
+    let replyTarget = note.reply_to_note_id ? { id: note.reply_to_note_id, label: '#' + note.reply_to_note_id } : null
+    const replyChip = buildReplyChip(() => {
+      replyTarget = null
+      replyChip.render(null)
+      scheduleSave()
+    })
+    replyChip.render(replyTarget)
+    if (replyTarget) {
+      const targetId = replyTarget.id
+      getNoteById(targetId)
+        .then((n) => {
+          if (n && replyTarget && replyTarget.id === targetId) {
+            replyTarget = { id: n.id, label: noteTitleOrExcerpt(n) }
+            replyChip.render(replyTarget)
+          }
+        })
+        .catch(() => {})
+    }
+    const replySearch = buildReplySearchField({
+      excludeId: note.id,
+      onSelect: (n) => {
+        replyTarget = { id: n.id, label: noteTitleOrExcerpt(n) }
+        replyChip.render(replyTarget)
+        scheduleSave()
+      },
+    })
+
     const saveStatusEl = el('span', { class: 'save-status' })
     let saveTimer = null
 
@@ -1889,6 +2142,7 @@ function renderDetailNote(note, { foundInList } = {}) {
         sourceType: sourceSelect.value,
         recipient: recipientSelect.value || null,
         tags: tagEditor.getTags(),
+        replyToNoteId: replyTarget ? replyTarget.id : null,
       }
       try {
         await updateNote(note.id, fields)
@@ -1899,6 +2153,7 @@ function renderDetailNote(note, { foundInList } = {}) {
           source_type: fields.sourceType,
           recipient: fields.recipient,
           tags: fields.tags,
+          reply_to_note_id: fields.replyToNoteId,
           updated_at: new Date().toISOString(),
         })
         saveStatusEl.textContent = '已儲存'
@@ -1924,6 +2179,7 @@ function renderDetailNote(note, { foundInList } = {}) {
       el('label', { class: 'field-label' }, [el('span', { text: '來源' }), sourceSelect]),
       el('label', { class: 'field-label' }, [el('span', { text: '收' }), recipientSelect]),
       tagField(tagEditor, { label: '標籤' }),
+      el('label', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replyChip.element, replySearch]),
       saveStatusEl,
     ])
   }
@@ -1932,7 +2188,7 @@ function renderDetailNote(note, { foundInList } = {}) {
 
   renderDetailShell(
     [
-      el('div', { class: 'detail-header-actions' }, [copyBtn, editToggleBtn]),
+      el('div', { class: 'detail-header-actions' }, [copyBtn, replyBtn, editToggleBtn]),
       el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
       el('div', { class: 'detail-badges' }, [
         el('span', { class: 'badge badge-from' }, [iconUser(), el('span', { text: fromLabel(note.created_by_label) })]),

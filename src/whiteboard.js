@@ -107,11 +107,38 @@ export async function getNoteById(id) {
   return data
 }
 
-export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel }) {
-  // Only writable columns per id=421 §2 / id=426 §2 / id=432 §〇 grants —
-  // never send id / created_by_uid / last_modified_by / extracted_to /
-  // created_at / updated_at. recipient and (as of id=432, create-time only)
-  // created_by_label are both purely display/routing, never authorization.
+// id=440 §1.2's manual reply-target search — by title (ilike) or exact id
+// (numeric query), per the spec's literal "依標題或 id". excludeId keeps a
+// note being edited off its own candidate list (§1.2's self-reference
+// guard); Compose has no excludeId since a brand-new note has no id yet.
+export async function searchNotesForReply(query, { excludeId } = {}) {
+  const q = (query || '').trim()
+  if (!q) return []
+  let sel = supabase.from(TABLE).select('id, title, content').is('deleted_at', null)
+  sel = /^\d+$/.test(q) ? sel.eq('id', Number(q)) : sel.ilike('title', `%${q.replace(/[%,]/g, '')}%`)
+  const { data, error } = await sel.order('created_at', { ascending: false }).limit(8)
+  if (error) throw error
+  return excludeId ? data.filter((n) => n.id !== excludeId) : data
+}
+
+// id=439 §四's forward-link query verbatim (deleted_at IS NULL filter).
+export async function listReplies(noteId) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('id, title, content, created_at')
+    .eq('reply_to_note_id', noteId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data
+}
+
+export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId }) {
+  // Only writable columns per id=421 §2 / id=426 §2 / id=432 §〇 / id=439 §三
+  // grants — never send id / created_by_uid / last_modified_by /
+  // extracted_to / created_at / updated_at. recipient and reply_to_note_id
+  // are both purely display/routing/structural, never authorization
+  // (id=439 §三's column comment is explicit about this for the latter).
   const { data, error } = await supabase
     .from(TABLE)
     .insert({
@@ -122,6 +149,7 @@ export async function createNote({ title, content, projectKey, sourceType, tags,
       tags,
       recipient: recipient || null,
       created_by_label: createdByLabel || null,
+      reply_to_note_id: replyToNoteId || null,
     })
     .select()
     .single()
@@ -129,13 +157,14 @@ export async function createNote({ title, content, projectKey, sourceType, tags,
   return data
 }
 
-// Edit-time update (id=432 §一): title/content/project_key/source_type/
-// recipient/tags only. created_by_uid/label, last_modified_by, extracted_to,
-// and timestamps are never accepted here — created_by_label in particular is
-// writable at creation (id=432 §〇) but that grant doesn't extend to
-// UPDATE, so passing it here would just fail at the DB regardless.
-const EDITABLE_FIELDS = ['title', 'content', 'projectKey', 'sourceType', 'recipient', 'tags']
-const FIELD_TO_COLUMN = { projectKey: 'project_key', sourceType: 'source_type' }
+// Edit-time update (id=432 §一, id=440 §一.2): title/content/project_key/
+// source_type/recipient/tags/reply_to_note_id only. created_by_uid/label,
+// last_modified_by, extracted_to, and timestamps are never accepted here —
+// created_by_label in particular is writable at creation (id=432 §〇) but
+// that grant doesn't extend to UPDATE, so passing it here would just fail
+// at the DB regardless.
+const EDITABLE_FIELDS = ['title', 'content', 'projectKey', 'sourceType', 'recipient', 'tags', 'replyToNoteId']
+const FIELD_TO_COLUMN = { projectKey: 'project_key', sourceType: 'source_type', replyToNoteId: 'reply_to_note_id' }
 
 export async function updateNote(id, fields) {
   const payload = {}

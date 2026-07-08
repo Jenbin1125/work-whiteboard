@@ -91,3 +91,12 @@ export function fromLabel(label) {
   if (!label) return '你'
   return recipientLabel(label)
 }
+
+// Title-or-first-line fallback used for the row list preview (id=429/435)
+// and, per id=440, for identifying a note wherever it's referenced
+// elsewhere (reply chip, reply search results, backward/forward links) —
+// factored out so all of those read the same short label for the same note.
+export function noteTitleOrExcerpt(note) {
+  if (note.title && note.title.trim()) return note.title.trim()
+  return (note.content || '').split('\n')[0].trim() || '(無內容)'
+}

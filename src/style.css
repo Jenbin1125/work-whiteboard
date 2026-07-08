@@ -580,6 +580,87 @@ body.body-scroll-locked { overflow: hidden; }
 }
 .copy-ref-btn.copied { color: #0f766e; border-color: #0f766e; }
 
+/* id=440 §一.1: 詳情頁 reply entry point — same visual weight as 複製引用. */
+.reply-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: #555;
+}
+
+/* id=440 §2: bidirectional reply links in the detail view body. */
+.reply-info:empty { display: none; }
+.reply-back-link { margin: 0.5rem 0; }
+.reply-forward-list { margin: 0.5rem 0; }
+.reply-forward-heading { font-size: 0.8rem; color: #666; margin: 0 0 0.3rem; font-weight: 600; }
+.reply-forward-list ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.reply-link-btn {
+  background: none;
+  border: none;
+  color: #0f766e;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.15rem 0;
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+/* id=440 §一: reply-target chip (Compose + detail edit form) — same look as
+   a .tag-chip, this just isn't a tag. */
+.reply-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #eef0f2;
+  color: #335;
+  border-radius: 999px;
+  padding: 0.25rem 0.3rem 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  margin-bottom: 0.4rem;
+}
+.reply-target-chip button { background: none; border: none; cursor: pointer; color: #556; font-size: 0.9rem; line-height: 1; padding: 0 0.25rem; }
+
+/* id=440 §1.2: manual reply-target search — same dropdown treatment as
+   .tag-suggestions (id=434 §二), just a different field. */
+.reply-search-field { position: relative; }
+.reply-search-results {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin: 0.2rem 0 0;
+  padding: 0.2rem 0;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.reply-search-results.hidden { display: none; }
+.reply-search-results li button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+}
+.reply-search-results li button:hover { background: #f2f4f6; }
+.reply-search-empty { padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #888; }
+
 /* Toast: single reused element, so rapid clicks can never stack up more than
    one. Optional action button (5s trash-undo, "開啟詳情" after create). */
 .wb-toast {
