@@ -28,6 +28,7 @@ function icon(paths, { viewBox = '0 0 24 24' } = {}) {
   })
   for (const p of paths) {
     if (p.circle) svg.appendChild(svgEl('circle', p.circle))
+    else if (p.rect) svg.appendChild(svgEl('rect', p.rect))
     else svg.appendChild(svgEl('path', { d: p.d }))
   }
   return svg
@@ -54,4 +55,20 @@ export function iconTrash() {
 
 export function iconChevron() {
   return icon([{ d: 'M6 9l6 6 6-6' }])
+}
+
+// id=435 §二.2: 複製內文 (copy note content) — classic overlapping-rectangles
+// "copy" glyph, distinct from iconLink()'s chain-link used for 複製連結.
+export function iconCopy() {
+  return icon([
+    { rect: { x: '9', y: '9', width: '12', height: '12', rx: '2' } },
+    { d: 'M5 15V5a2 2 0 012-2h10' },
+  ])
+}
+
+// id=435 §二.2: 開啟詳情 (navigate to detail) — a plain chevron-right, kept
+// visually distinct from iconChevron() (the row's own expand indicator,
+// which points down/up) so the two never get confused on the same row.
+export function iconChevronRight() {
+  return icon([{ d: 'M9 6l6 6-6 6' }])
 }

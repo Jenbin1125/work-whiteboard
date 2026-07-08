@@ -8,11 +8,16 @@ function sanitizeTitleForCopy(title) {
   return oneLine.slice(0, 60) + '…'
 }
 
+// id=435 §二.2: "複製連結" copies just this — deliberately distinct from
+// buildReferenceText() below, which bundles the id/title alongside it.
+export function buildNoteLink(note) {
+  return `${window.location.origin}${window.location.pathname}#/note/${note.id}`
+}
+
 export function buildReferenceText(note) {
   const title = sanitizeTitleForCopy(note.title)
   const firstLine = title ? `白板 note #${note.id}｜${title}` : `白板 note #${note.id}`
-  const url = `${window.location.origin}${window.location.pathname}#/note/${note.id}`
-  return `${firstLine}\n${url}`
+  return `${firstLine}\n${buildNoteLink(note)}`
 }
 
 // Attachment reference (id=431 §六): plain text only, never the signed URL —

@@ -25,7 +25,12 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .note-form { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
 .note-form textarea, .note-form input[type="text"] { width: 100%; margin-bottom: 0.6rem; padding: 0.5rem; font-size: 1rem; }
 .note-form textarea { min-height: 160px; resize: vertical; }
-.note-form .row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+/* align-items:flex-start (not the flex default of stretch) — otherwise every
+   field in the row stretches to match tagField's height (chip editor + two
+   hint lines + 最近使用), and a <select> given that much height via flex:1
+   renders as an expanded listbox instead of a normal closed dropdown. Caught
+   while screenshotting id=435; latent since id=433 introduced tagField. */
+.note-form .row { display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .note-form button[type="submit"] { padding: 0.5rem 1.1rem; font-size: 1rem; cursor: pointer; }
 .warning { color: #9a4b00; font-size: 0.85rem; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; padding: 0.5rem; }
 .form-status { font-size: 0.85rem; color: #555; }
@@ -161,6 +166,9 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
   .wb-row-main { flex-wrap: wrap; }
   .wb-topic { flex-basis: 100%; order: 3; white-space: normal; overflow: visible; text-overflow: clip; }
   .wb-time { order: 2; }
+  /* id=435 §二.5: 3 icon buttons don't fit alongside badges/time on a narrow
+     row — drop to their own trailing line rather than squeezing/overflowing. */
+  .row-actions { order: 4; flex-basis: 100%; justify-content: flex-end; margin-top: 0.2rem; }
 }
 
 .wb-row-expand {
@@ -236,48 +244,22 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 }
 .wba-phi-note { font-size: 0.7rem; color: #888; margin: 0; }
 
-.card-menu { position: relative; }
-.card-menu-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-  color: #666;
-  padding: 0.25rem 0.4rem;
-  /* id=434 §四: was 32px — bumped to match the app's other touch targets. */
-  min-width: 44px;
-  min-height: 44px;
+/* id=435 §二: replaced the old "⋯" popover menu — three always-visible
+   icon buttons per row instead of a menu needing two clicks. */
+.row-actions { display: flex; align-items: center; gap: 0.1rem; flex-shrink: 0; }
+.row-icon-nav {
+  /* id=435 §二.3: hairline divider marks 開啟詳情 as the different
+     (navigational, not copy) kind of action from the two before it. */
+  margin-left: 0.3rem;
+  padding-left: 0.35rem;
+  border-left: 1px solid #e2e2e2;
 }
-.card-menu-popover {
-  position: absolute;
-  top: 1.6rem;
-  right: 0;
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  z-index: 20;
-  padding: 0.15rem;
-}
-.card-menu-popover.hidden { display: none; }
-.card-menu-item {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  text-align: left;
-  background: none;
-  border: none;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.card-menu-item:hover { background: #f2f2f2; }
 
-/* id=427 §七: icon-only copy-reference entry inside the card ⋯ menu.
-   Feedback is a tooltip + aria-label swap, not a toast (unlike the detail
-   panel's button, which is untouched by this section). */
+/* id=427 §七: icon-only actions with a hover tooltip that swaps to
+   "已複製" on a successful copy (id=435 §二 generalized this to every
+   row-level icon action, not just the one that used to live in the ⋯ menu).
+   Feedback is the tooltip + aria-label swap, not a toast (unlike the detail
+   panel's own "複製引用" button, which is untouched by this). */
 .copy-icon-btn {
   position: relative;
   display: inline-flex;

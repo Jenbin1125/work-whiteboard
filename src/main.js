@@ -19,11 +19,11 @@ import {
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
-import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
+import { buildReferenceText, buildNoteLink, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
 import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
 import { normalizeTag, displayTag, validateNewTag, getTagStats, invalidateTagStats, rankTagSuggestions } from './tags.js'
-import { iconUser, iconLink, iconPaperclip, iconTrash, iconChevron } from './icons.js'
+import { iconUser, iconLink, iconPaperclip, iconTrash, iconChevron, iconCopy, iconChevronRight } from './icons.js'
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_BYTES,
@@ -293,21 +293,27 @@ function renderNoteForm({ startOpen }) {
   // still only wraps its own control for correct label-for association.
   const fromField = el('label', { class: 'field-label' }, [el('span', { text: '發件身分' }), fromSelect])
   const fromHint = el('p', { class: 'field-hint', text: '此欄是顯示與路由 metadata，不會改變資料擁有者。' })
-  const moreFields = el('div', { class: 'row' }, [
-    labeledField('專案', projectSelect),
-    labeledField('來源', sourceSelect),
-    labeledField('To', toSelect),
-    tagField(tagEditor),
-  ])
+  // id=435 §一: To promoted out of "更多分類" — high enough frequency of use
+  // (per Human's usage feedback) that it belongs at the main level, right
+  // under 發件身分.
+  const toField = el('label', { class: 'field-label' }, [el('span', { text: 'To' }), toSelect])
+  const moreFields = el('div', { class: 'row' }, [labeledField('專案', projectSelect), labeledField('來源', sourceSelect), tagField(tagEditor)])
+  // "更多分類"'s own border-top already reads as the spec's divider line
+  // above it — no separate <hr> needed.
   const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields])
 
-  form.appendChild(contentInput)
+  // id=435 §一.1: Topic -> Payload -> 發件身分(+hint) -> To -> PHI(+新增，
+  // 緊鄰) -> 更多分類. This is an explicit Human-directed reversal of id=432
+  // §四's "content-first" ordering (Payload was first) — not an oversight;
+  // per the spec, id=432 §四's ordering description is superseded by this.
   form.appendChild(titleInput)
+  form.appendChild(contentInput)
   form.appendChild(fromField)
   form.appendChild(fromHint)
-  form.appendChild(moreDetails)
-  form.appendChild(el('div', { class: 'compose-submit-row' }, [submitBtn, phiNote]))
+  form.appendChild(toField)
+  form.appendChild(el('div', { class: 'compose-submit-row' }, [phiNote, submitBtn]))
   form.appendChild(status)
+  form.appendChild(moreDetails)
 
   // Native <details> gives a free, accessible collapse/expand on narrow
   // screens without extra JS. <summary> must be a direct child of <details>
@@ -1003,16 +1009,17 @@ function renderRow(note, mount) {
 
   const timeEl = el('span', { class: 'wb-time', text: new Date(note.created_at).toLocaleString() })
 
-  const menu = buildCardMenu(note)
+  const rowActions = buildRowActionIcons(note)
   // id=434 §九: visual expand/collapse indicator (rotates via CSS off the
   // row's own aria-expanded, set below), pure addition alongside the
   // existing accordion behavior — not a new interactive element.
   const chevron = el('span', { class: 'wb-row-chevron', 'aria-hidden': 'true' }, [iconChevron()])
 
+  // id=435 §二.1 mockup order: badges, topic, action icons, THEN time.
   const rowMain = el(
     'div',
     { class: 'wb-row-main', role: 'button', tabindex: '0', 'aria-expanded': String(isExpanded) },
-    [fromBadge, toBadge, topicEl, timeEl, menu, chevron]
+    [fromBadge, toBadge, topicEl, rowActions, timeEl, chevron]
   )
 
   const toggle = () => {
@@ -1444,82 +1451,33 @@ function renderAttachmentRow(att, noteId, onChanged) {
   return li
 }
 
-function buildCardMenu(note) {
-  const wrap = el('div', { class: 'card-menu' })
-  const popover = el('div', { class: 'card-menu-popover hidden' })
-
-  const close = () => {
-    popover.classList.add('hidden')
-    if (openMenuCloser === close) openMenuCloser = null
-  }
-
-  const openDetailBtn = el('button', {
-    class: 'card-menu-item',
-    type: 'button',
-    text: '開啟詳情',
-    onclick: (e) => {
-      e.stopPropagation()
-      close()
-      navigateToNote(note.id)
-    },
-  })
-  // id=432 §十一: 複製引用 used more often than 開啟詳情, so it sits above it.
-  popover.appendChild(buildCopyIconButton(note))
-  popover.appendChild(openDetailBtn)
-
-  const menuBtn = el('button', {
-    class: 'card-menu-btn',
-    type: 'button',
-    'aria-label': '更多選項',
-    text: '⋯',
-    onclick: (e) => {
-      e.stopPropagation()
-      const wasHidden = popover.classList.contains('hidden')
-      if (openMenuCloser) openMenuCloser()
-      if (wasHidden) {
-        popover.classList.remove('hidden')
-        openMenuCloser = close
-      }
-    },
-  })
-
-  wrap.appendChild(menuBtn)
-  wrap.appendChild(popover)
-  return wrap
-}
-
 document.addEventListener('click', (e) => {
-  if (openMenuCloser && !e.target.closest('.card-menu') && !e.target.closest('.user-menu')) {
+  if (openMenuCloser && !e.target.closest('.user-menu')) {
     openMenuCloser()
     openMenuCloser = null
   }
 })
 
-// id=427 §七: card-menu entry is icon-only. Feedback lives entirely in the
-// tooltip text + aria-label swap (no toast) — deliberately not closing the
-// popover on click, so the user actually sees the "已複製" state before it
-// closes (via the existing click-outside handler).
-function buildCopyIconButton(note) {
-  const DEFAULT_LABEL = '複製白板引用'
-  const DEFAULT_TOOLTIP = '複製引用'
-
-  const tooltip = el('span', { class: 'copy-tooltip', 'aria-hidden': 'true', text: DEFAULT_TOOLTIP })
-  const icon = iconLink()
-  const btn = el('button', { class: 'copy-icon-btn', type: 'button', 'aria-label': DEFAULT_LABEL })
-  btn.appendChild(icon)
-  btn.appendChild(tooltip)
+// id=427 §七's hover-tooltip -> "已複製" swap, generalized (id=435 §二.2)
+// for any icon-only row action. onActivate does the actual work; returning
+// true/false triggers the copied/failed tooltip swap, returning undefined
+// (pure navigation, no clipboard involved) leaves the tooltip alone.
+function buildIconAction({ icon, label, className = 'copy-icon-btn', onActivate }) {
+  const tooltip = el('span', { class: 'copy-tooltip', 'aria-hidden': 'true', text: label })
+  const btn = el('button', { class: className, type: 'button', 'aria-label': label }, [icon, tooltip])
 
   btn.addEventListener('click', async (e) => {
     e.stopPropagation()
-    const ok = await performCopy(note, { toast: false })
-    tooltip.textContent = ok ? '已複製' : '複製失敗'
-    btn.setAttribute('aria-label', ok ? '已複製' : '複製失敗')
+    const result = await onActivate(e)
+    if (result === undefined) return
+    tooltip.textContent = result ? '已複製' : '複製失敗'
+    btn.setAttribute('aria-label', result ? '已複製' : '複製失敗')
     tooltip.classList.add('force-visible')
-    btn.classList.toggle('copied', ok)
+    btn.classList.toggle('copied', result)
     setTimeout(() => {
       tooltip.classList.remove('force-visible')
-      tooltip.textContent = DEFAULT_TOOLTIP
-      btn.setAttribute('aria-label', DEFAULT_LABEL)
+      tooltip.textContent = label
+      btn.setAttribute('aria-label', label)
       btn.classList.remove('copied')
     }, 1400)
   })
@@ -1527,11 +1485,57 @@ function buildCopyIconButton(note) {
   return btn
 }
 
+// id=435 §二: replaces the old "⋯" popover menu with 3 always-visible icons.
+// 複製連結/複製內文 stay grouped (both copy actions); 開啟詳情 gets a hairline
+// divider (.row-icon-nav) to mark it as the different, navigational kind.
+// Note on scope: this removes the row's OWN quick-access to "複製引用"
+// (id+title+url combined text) — that action still exists, unchanged, as
+// the detail panel's own "複製引用" button once you reach it via 開啟詳情,
+// so it isn't deleted, just no longer duplicated at the row level. 複製連結
+// (bare URL) and 複製引用 (id+title+url) stay semantically distinct per the
+// spec's acceptance item 8.
+function buildRowActionIcons(note) {
+  const copyLinkBtn = buildIconAction({
+    icon: iconLink(),
+    label: '複製連結',
+    onActivate: async () => {
+      try {
+        await copyToClipboard(buildNoteLink(note))
+        return true
+      } catch {
+        return false
+      }
+    },
+  })
+  const copyContentBtn = buildIconAction({
+    icon: iconCopy(),
+    label: '複製內文',
+    onActivate: async () => {
+      try {
+        await copyToClipboard(note.content)
+        return true
+      } catch {
+        return false
+      }
+    },
+  })
+  const openDetailBtn = buildIconAction({
+    icon: iconChevronRight(),
+    label: '開啟詳情',
+    className: 'copy-icon-btn row-icon-nav',
+    onActivate: () => {
+      navigateToNote(note.id)
+    },
+  })
+  return el('div', { class: 'row-actions' }, [copyLinkBtn, copyContentBtn, openDetailBtn])
+}
+
 // --- copy-reference (id=427 §二): id + short title + deep link, never the
 // full note content, so a paste into a chat can't leak sensitive content. ---
-// toast:false is used by the card-menu icon button (id=427 §七), which gives
-// its own inline tooltip feedback instead of the shared toast.
-async function performCopy(note, { toast = true } = {}) {
+// Only caller left is the detail panel's own "複製引用" button (id=435 §二
+// removed the row-level one — see buildRowActionIcons' comment), which
+// wants both the toast AND its own inline "已複製" swap.
+async function performCopy(note) {
   if (copyInFlight) return false
   copyInFlight = true
   setTimeout(() => {
@@ -1539,10 +1543,10 @@ async function performCopy(note, { toast = true } = {}) {
   }, 600)
   try {
     await copyToClipboard(buildReferenceText(note))
-    if (toast) showToast('已複製白板引用')
+    showToast('已複製白板引用')
     return true
   } catch (err) {
-    if (toast) showToast(friendlyErrorMessage(err))
+    showToast(friendlyErrorMessage(err))
     return false
   }
 }
