@@ -22,6 +22,7 @@ import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from '
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
 import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
+import { extractFootballPreview } from './footballPreview.js'
 import { normalizeTag, displayTag, validateNewTag, getTagStats, invalidateTagStats, rankTagSuggestions } from './tags.js'
 import { iconUser, iconLink, iconPaperclip, iconTrash, iconCopy, iconChevronRight } from './icons.js'
 import {
@@ -1095,7 +1096,14 @@ function renderRow(note, mount) {
   // id=435 §三.2: From/To stacked vertically (was side-by-side).
   const fromToStack = el('div', { class: 'wb-row-fromto' }, [fromBadge, toBadge])
 
-  const topicText = note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)'
+  // id=438: 🏈 交棒卡-format notes preview the extracted「球（任務）」text
+  // instead of Title/first-line — Title is often just a restated headline,
+  // while the task line is what a recipient actually needs to judge
+  // relevance at a glance. Non-🏈 notes, and 🏈 notes where extraction
+  // fails, keep the exact prior fallback (id=438 §一.2 優雅降級).
+  const topicText =
+    extractFootballPreview(note.content) ||
+    (note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)')
   const topicEl = el('span', { class: 'wb-topic', text: topicText })
   // id=435 §四.1: reverts §三.3 — tags go back to their own line below
   // Topic (Human found the shared-line width too cramped in practice).

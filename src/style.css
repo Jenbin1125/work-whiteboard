@@ -23,6 +23,13 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 @media (max-width: 900px) {
   .board-grid { grid-template-columns: 1fr; }
 }
+/* id=438: grid items default to min-width:auto, so a 1fr track won't shrink
+   below its content's intrinsic width — a long single-line nowrap preview
+   (.wb-topic) would otherwise force this whole column wider than the grid
+   track instead of being clipped with an ellipsis. Latent since id=429;
+   only became visible once id=438's up-to-90-char previews were long
+   enough to trigger it. */
+.list-col { min-width: 0; }
 .form-col .note-form { position: sticky; top: 1rem; }
 @media (max-width: 900px) {
   .form-col .note-form { position: static; }
