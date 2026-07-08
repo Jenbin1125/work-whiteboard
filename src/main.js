@@ -227,6 +227,18 @@ function renderNoteForm({ startOpen }) {
   const replyChip = buildReplyChip(() => {
     replyTarget = null
     replyChip.render(null)
+    // id=440 §四 (Scribe #142 定案): cancelling a reply must reset 寄/收
+    // back to their normal defaults too — leaving 收 on the auto-filled
+    // value (or 寄 on whatever it happened to be) after the banner
+    // disappears would look cancelled but silently leave stale field
+    // values behind. This is the one real UI-consistency bug in the
+    // ticket; 寄 was never auto-swapped in the first place (see
+    // startReply below), so there was nothing to "not change" there —
+    // this reset just restores both fields to their normal post-submit
+    // defaults, same as a completed submit already does.
+    toSelect.value = ''
+    fromSelect.value = 'Human-Jenbin'
+    persistDraft()
   })
   const replySearch = buildReplySearchField({
     onSelect: (n) => {
@@ -456,9 +468,17 @@ function renderNoteForm({ startOpen }) {
   function startReply(note) {
     replyTarget = { id: note.id, label: noteTitleOrExcerpt(note) }
     replyChip.render(replyTarget)
-    // Reply target's spec text labels this a prefill convenience, not a
-    // hard link — only apply it if the user hasn't already chosen a 收
-    // value for an in-progress draft, so this never clobbers their pick.
+    // id=440 §四 (Scribe #142 定案, superseding UI-Claude's original
+    // email-reply assumption): 寄 is deliberately NEVER touched here — it
+    // was never auto-swapped to begin with, and Scribe's argument (this
+    // board's actual pattern is relay handoffs, A→B→C, not two-party
+    // back-and-forth, so guessing "原收件人" would often be wrong anyway;
+    // also, whether you're transcribing another agent's words or speaking
+    // as yourself is something only the human at the keyboard knows) is
+    // why it stays manual, defaulting to Human-Jenbin. 收's auto-fill
+    // below is confirmed correct and unchanged — only applied if the user
+    // hasn't already chosen a 收 value for an in-progress draft, so this
+    // never clobbers their pick.
     if (!toSelect.value && note.created_by_label && RECIPIENTS.includes(note.created_by_label)) {
       toSelect.value = note.created_by_label
       persistDraft()
