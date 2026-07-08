@@ -10,7 +10,13 @@ body {
 .login { text-align: center; margin-top: 4rem; }
 .login button { padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
 
-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
+header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.header-titles { flex-shrink: 0; }
+/* id=435 §五.1: site-wide PHI reminder — lives in the header (not Compose,
+   not the list column), low visual weight, sits between the title and the
+   user menu. flex:1 lets it absorb the space between them so it reads as
+   "right after the title" rather than centered in the header. */
+.header-phi-note { flex: 1 1 240px; min-width: 0; margin: 0; padding-top: 0.35rem; font-size: 0.72rem; color: #999; }
 
 /* Two-column desktop layout: bigger form left, compact card wall right. Stacks on narrow screens. */
 .board-grid { display: grid; grid-template-columns: minmax(380px, 520px) 1fr; gap: 1.5rem; align-items: start; }
@@ -50,8 +56,9 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .compose-more summary { font-size: 0.85rem; color: #555; cursor: pointer; }
 .compose-more .row { margin-top: 0.5rem; }
 
-.compose-submit-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
-.phi-inline-note { font-size: 0.72rem; color: #888; margin: 0; }
+/* id=435 §五.2: submit button right-aligned (was left) — position (vertical
+   order), trigger logic, and post-submit behavior are all unchanged. */
+.compose-submit-row { display: flex; justify-content: flex-end; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
 
 /* Filters (id=432 §六): search bar + collapsible popover + active chips. */
 .filters { margin-bottom: 1rem; }
@@ -156,12 +163,13 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .badge-from { background: #eef0f2; color: #445; }
 .badge-to-set { background: #ecfdf5; color: #047857; }
 .badge-to-unset { background: none; color: #888; padding-left: 0; padding-right: 0; }
+/* id=435 §四.2: "寄"/"收" replaces the old person-icon SVG on row badges. */
+.badge-kind { font-weight: 700; }
 
-/* id=435 §三.3: Topic + tags share one line; tags get a narrower, capped
-   share of it instead of their own full-width line underneath. */
-.wb-row-topic-line { display: flex; align-items: center; gap: 0.5rem; flex: 1 1 200px; min-width: 0; }
+/* id=435 §四.1: reverts §三.3 — tags are back on their own line below
+   Topic, not sharing its line. */
+.wb-row-topic-block { display: flex; flex-direction: column; gap: 0.2rem; flex: 1 1 200px; min-width: 0; }
 .wb-topic {
-  flex: 1 1 auto;
   min-width: 0;
   font-weight: 700;
   font-size: 0.9rem;
@@ -173,7 +181,7 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 
 @media (max-width: 640px) {
   .wb-row-main { flex-wrap: wrap; }
-  .wb-row-topic-line { flex-basis: 100%; order: 3; }
+  .wb-row-topic-block { flex-basis: 100%; order: 3; }
   .wb-topic { white-space: normal; overflow: visible; text-overflow: clip; }
   .wb-time { order: 2; }
   /* id=435 §二.5: 3 icon buttons don't fit alongside badges/time on a narrow
@@ -316,9 +324,9 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 
 /* Row-level tag chips (id=433 §三): always visible on the collapsed row,
    clicking applies a filter — never toggles the row's own expand state.
-   id=435 §三.3: lives inline next to Topic now (via .wb-row-topic-line),
-   capped to a narrower share so Topic keeps the majority of the line. */
-.wb-row-tags { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.3rem; flex: 0 1 auto; max-width: 42%; min-width: 0; }
+   id=435 §四.1: back to its own full-width line under Topic (via
+   .wb-row-topic-block) — §三.3's shared-line version was reverted. */
+.wb-row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
 .row-tag-chip {
   background: #eef0f2;
   color: #335;

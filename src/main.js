@@ -157,11 +157,17 @@ function buildUserMenu() {
 function renderBoard() {
   const container = el('div', { class: 'board' })
 
+  // id=435 §五.1: PHI reminder lives at the page header now — a single
+  // site-wide notice (not Compose-specific, not list-specific), low visual
+  // weight, sits between the title block and the user menu. This supersedes
+  // §四.4's "top of the list column" placement and fully replaces the old
+  // Compose-form warning (removed below in renderNoteForm).
   const header = el('header', {}, [
     el('div', { class: 'header-titles' }, [
       el('h1', { text: '工作白板' }),
       el('p', { class: 'header-tagline', text: '快速留下、稍後整理' }),
     ]),
+    el('p', { class: 'header-phi-note', text: '⚠️ 請勿貼入病人可辨識資訊（PHI）、密碼、API key/token，或未經授權的受版權內容。' }),
     buildUserMenu(),
   ])
   container.appendChild(header)
@@ -227,9 +233,11 @@ function renderNoteForm({ startOpen }) {
   ;[titleInput, contentInput].forEach((input) => input.addEventListener('input', persistDraft))
   ;[fromSelect, projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
 
-  const phiNote = el('p', { class: 'phi-inline-note', text: '⚠️ 上傳/送出即表示已確認不含病人可辨識資訊(PHI)、密碼、API key/token，或未經授權的受版權內容。' })
   const status = el('p', { class: 'form-status' })
-  const submitBtn = el('button', { type: 'submit', text: '新增' })
+  // id=435 §六: text only ("新增" -> "送出"); §五.2: right-aligned (see the
+  // .compose-submit-row justify-content change in style.css) — trigger
+  // logic and post-submit behavior are both unchanged.
+  const submitBtn = el('button', { type: 'submit', text: '送出' })
 
   const doSubmit = async () => {
     status.textContent = ''
@@ -286,32 +294,29 @@ function renderNoteForm({ startOpen }) {
     },
   })
 
-  // id=434 §三.2: renamed from "From" + a fixed hint clarifying this is
-  // display/routing metadata, not an authorization or ownership change
-  // (id=432 〇 already established that rule; this just surfaces it in the
-  // UI). Kept as a sibling <p>, not nested inside the <label>, so the label
-  // still only wraps its own control for correct label-for association.
-  const fromField = el('label', { class: 'field-label' }, [el('span', { text: '發件身分' }), fromSelect])
-  const fromHint = el('p', { class: 'field-hint', text: '此欄是顯示與路由 metadata，不會改變資料擁有者。' })
-  // id=435 §一: To promoted out of "更多分類" — high enough frequency of use
-  // (per Human's usage feedback) that it belongs at the main level, right
-  // under 發件身分.
-  const toField = el('label', { class: 'field-label' }, [el('span', { text: 'To' }), toSelect])
+  // id=435 §四.2: "發件身分"/"To" renamed to the single-character "寄"/"收"
+  // (same vocabulary now used on the row badges too, see buildRowFromTo()).
+  // §四.3 removed the hint paragraph that used to sit under this field — the
+  // Compose form only has one real user (Human, the only one who can log
+  // in), so it added no clarification value for anyone actually seeing it.
+  const fromField = el('label', { class: 'field-label' }, [el('span', { text: '寄' }), fromSelect])
+  const toField = el('label', { class: 'field-label' }, [el('span', { text: '收' }), toSelect])
   const moreFields = el('div', { class: 'row' }, [labeledField('專案', projectSelect), labeledField('來源', sourceSelect), tagField(tagEditor)])
   // "更多分類"'s own border-top already reads as the spec's divider line
   // above it — no separate <hr> needed.
   const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields])
 
-  // id=435 §一.1: Topic -> Payload -> 發件身分(+hint) -> To -> PHI(+新增，
-  // 緊鄰) -> 更多分類. This is an explicit Human-directed reversal of id=432
-  // §四's "content-first" ordering (Payload was first) — not an oversight;
-  // per the spec, id=432 §四's ordering description is superseded by this.
+  // id=435 §一.1/§四: Topic -> Payload -> 寄 -> 收 -> 送出(靠右) -> 更多分類.
+  // This is an explicit Human-directed reversal of id=432 §四's
+  // "content-first" ordering (Payload was first) — not an oversight; per the
+  // spec, id=432 §四's ordering description is superseded by this. The PHI
+  // warning that used to sit here is gone entirely (id=435 §四.4/§五 moved
+  // it to the page header instead — see renderBoard()).
   form.appendChild(titleInput)
   form.appendChild(contentInput)
   form.appendChild(fromField)
-  form.appendChild(fromHint)
   form.appendChild(toField)
-  form.appendChild(el('div', { class: 'compose-submit-row' }, [phiNote, submitBtn]))
+  form.appendChild(el('div', { class: 'compose-submit-row' }, [submitBtn]))
   form.appendChild(status)
   form.appendChild(moreDetails)
 
@@ -707,7 +712,7 @@ function renderFilters(listMount) {
   const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, projectLabel(k)))])
   const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, statusLabel(k)))])
   const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
-  const fromInput = el('input', { type: 'text', placeholder: '發件身分篩選' })
+  const fromInput = el('input', { type: 'text', placeholder: '寄件篩選' })
   const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
   const sortSelect = el('select', {}, [option('updated_desc', '最近更新'), option('created_desc', '最新建立'), option('oldest_raw', '最舊待整理')])
   sortSelect.value = 'updated_desc'
@@ -726,8 +731,11 @@ function renderFilters(listMount) {
     labeledField('專案', projectSelect),
     labeledField('狀態', statusSelect),
     labeledField('來源', sourceSelect),
-    labeledField('發件身分', fromInput),
-    labeledField('To', toSelect),
+    // id=435 §四.2 extension: same "寄/收" vocabulary as Compose + the row
+    // badges, applied here too so it's consistent everywhere the concept
+    // shows up (the spec's own wording: "同一套「寄/收」語彙貫穿列表與表單").
+    labeledField('寄', fromInput),
+    labeledField('收', toSelect),
     labeledField('排序', sortSelect),
     labeledField('標籤', tagFilterEditor.element),
     commonTagsBlock.element,
@@ -846,8 +854,8 @@ function renderFilters(listMount) {
     if (filters.projectKey) chips.push(['專案: ' + projectLabel(filters.projectKey), () => clearOne('projectKey', projectSelect, '')])
     if (filters.status) chips.push(['狀態: ' + statusLabel(filters.status), () => setStatus('')])
     if (filters.source) chips.push(['來源: ' + sourceLabel(filters.source), () => clearOne('source', sourceSelect, '')])
-    if (filters.from) chips.push(['發件身分: ' + filters.from, () => clearOne('from', fromInput, '')])
-    if (filters.to) chips.push(['To: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : recipientLabel(filters.to)), () => clearOne('to', toSelect, '')])
+    if (filters.from) chips.push(['寄: ' + filters.from, () => clearOne('from', fromInput, '')])
+    if (filters.to) chips.push(['收: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : recipientLabel(filters.to)), () => clearOne('to', toSelect, '')])
     filters.tags.forEach((t) => chips.push(['標籤: ' + displayTag(t), () => removeTagFromFilter(t)]))
 
     chipsRow.replaceChildren(
@@ -1001,32 +1009,37 @@ function renderRow(note, mount) {
   // id=435 §三.1: plain numeric id, no "id=" prefix, secondary/gray styling.
   const idEl = el('span', { class: 'wb-row-id', text: String(note.id) })
 
-  const fromBadge = el('span', { class: 'badge badge-from' }, [iconUser(), el('span', { text: fromLabel(note.created_by_label) })])
+  // id=435 §四.2: the generic person icon is replaced by a single "寄"/"收"
+  // character — same 寄/收 vocabulary as the Compose field labels now, so
+  // list rows and the form read consistently (scoped to the list row only
+  // per the spec; the detail panel's own badges below are untouched).
+  const fromBadge = el('span', { class: 'badge badge-from' }, [el('span', { class: 'badge-kind', text: '寄' }), el('span', { text: fromLabel(note.created_by_label) })])
 
   const toBadge = note.recipient
-    ? el('span', { class: 'badge badge-to-set' }, [iconUser(), el('span', { text: recipientLabel(note.recipient) })])
-    : el('span', { class: 'badge-to-unset', text: '未指名' })
+    ? el('span', { class: 'badge badge-to-set' }, [el('span', { class: 'badge-kind', text: '收' }), el('span', { text: recipientLabel(note.recipient) })])
+    : el('span', { class: 'badge-to-unset' }, [el('span', { class: 'badge-kind', text: '收' }), el('span', { text: '未指名' })])
   // id=435 §三.2: From/To stacked vertically (was side-by-side).
   const fromToStack = el('div', { class: 'wb-row-fromto' }, [fromBadge, toBadge])
 
   const topicText = note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)'
   const topicEl = el('span', { class: 'wb-topic', text: topicText })
-  // id=435 §三.3: tags now share Topic's line (narrower proportion) instead
-  // of getting their own full-width line below it.
-  const topicLine = el('div', { class: 'wb-row-topic-line' }, [topicEl, buildRowTagChips(note)])
+  // id=435 §四.1: reverts §三.3 — tags go back to their own line below
+  // Topic (Human found the shared-line width too cramped in practice).
+  const topicBlock = el('div', { class: 'wb-row-topic-block' }, [topicEl, buildRowTagChips(note)])
 
   const timeEl = el('span', { class: 'wb-time', text: new Date(note.created_at).toLocaleString() })
 
   const rowActions = buildRowActionIcons(note)
 
-  // id=435 §三.6 mockup order: id -> From/To stack -> topic+tags -> action
-  // icons -> time. The standalone chevron indicator (id=434 §九) is removed
-  // per §三.5 — row-click-to-expand is unchanged, it just no longer has a
-  // dedicated visual "button" implying a second way to trigger the same thing.
+  // id=435 §三.6 mockup order: id -> From/To stack -> topic(+tags below it)
+  // -> action icons -> time. The standalone chevron indicator (id=434 §九)
+  // is removed per §三.5 — row-click-to-expand is unchanged, it just no
+  // longer has a dedicated visual "button" implying a second way to trigger
+  // the same thing.
   const rowMain = el(
     'div',
     { class: 'wb-row-main', role: 'button', tabindex: '0', 'aria-expanded': String(isExpanded) },
-    [idEl, fromToStack, topicLine, rowActions, timeEl]
+    [idEl, fromToStack, topicBlock, rowActions, timeEl]
   )
 
   const toggle = () => {
@@ -1842,7 +1855,7 @@ function renderDetailNote(note, { foundInList } = {}) {
       el('label', { class: 'field-label' }, [el('span', { text: 'Payload' }), contentInput]),
       el('label', { class: 'field-label' }, [el('span', { text: '專案' }), projectSelect]),
       el('label', { class: 'field-label' }, [el('span', { text: '來源' }), sourceSelect]),
-      el('label', { class: 'field-label' }, [el('span', { text: 'To' }), recipientSelect]),
+      el('label', { class: 'field-label' }, [el('span', { text: '收' }), recipientSelect]),
       tagField(tagEditor, { label: '標籤' }),
       saveStatusEl,
     ])
