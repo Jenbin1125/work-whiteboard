@@ -53,10 +53,6 @@ export function iconTrash() {
   return icon([{ d: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6' }])
 }
 
-export function iconChevron() {
-  return icon([{ d: 'M6 9l6 6 6-6' }])
-}
-
 // id=435 §二.2: 複製內文 (copy note content) — classic overlapping-rectangles
 // "copy" glyph, distinct from iconLink()'s chain-link used for 複製連結.
 export function iconCopy() {
@@ -66,9 +62,7 @@ export function iconCopy() {
   ])
 }
 
-// id=435 §二.2: 開啟詳情 (navigate to detail) — a plain chevron-right, kept
-// visually distinct from iconChevron() (the row's own expand indicator,
-// which points down/up) so the two never get confused on the same row.
+// id=435 §二.2: 開啟詳情 (navigate to detail) — a plain chevron-right.
 export function iconChevronRight() {
   return icon([{ d: 'M9 6l6 6-6 6' }])
 }

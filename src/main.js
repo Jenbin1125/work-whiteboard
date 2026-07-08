@@ -19,11 +19,11 @@ import {
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
-import { buildReferenceText, buildNoteLink, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
+import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
 import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
 import { normalizeTag, displayTag, validateNewTag, getTagStats, invalidateTagStats, rankTagSuggestions } from './tags.js'
-import { iconUser, iconLink, iconPaperclip, iconTrash, iconChevron, iconCopy, iconChevronRight } from './icons.js'
+import { iconUser, iconLink, iconPaperclip, iconTrash, iconCopy, iconChevronRight } from './icons.js'
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_BYTES,
@@ -998,28 +998,35 @@ function renderRow(note, mount) {
   if (attachments) expandChildren.push(attachments.element)
   const expandSection = el('div', { class: isExpanded ? 'wb-row-expand' : 'wb-row-expand hidden' }, expandChildren)
 
+  // id=435 §三.1: plain numeric id, no "id=" prefix, secondary/gray styling.
+  const idEl = el('span', { class: 'wb-row-id', text: String(note.id) })
+
   const fromBadge = el('span', { class: 'badge badge-from' }, [iconUser(), el('span', { text: fromLabel(note.created_by_label) })])
 
   const toBadge = note.recipient
     ? el('span', { class: 'badge badge-to-set' }, [iconUser(), el('span', { text: recipientLabel(note.recipient) })])
     : el('span', { class: 'badge-to-unset', text: '未指名' })
+  // id=435 §三.2: From/To stacked vertically (was side-by-side).
+  const fromToStack = el('div', { class: 'wb-row-fromto' }, [fromBadge, toBadge])
 
   const topicText = note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)'
   const topicEl = el('span', { class: 'wb-topic', text: topicText })
+  // id=435 §三.3: tags now share Topic's line (narrower proportion) instead
+  // of getting their own full-width line below it.
+  const topicLine = el('div', { class: 'wb-row-topic-line' }, [topicEl, buildRowTagChips(note)])
 
   const timeEl = el('span', { class: 'wb-time', text: new Date(note.created_at).toLocaleString() })
 
   const rowActions = buildRowActionIcons(note)
-  // id=434 §九: visual expand/collapse indicator (rotates via CSS off the
-  // row's own aria-expanded, set below), pure addition alongside the
-  // existing accordion behavior — not a new interactive element.
-  const chevron = el('span', { class: 'wb-row-chevron', 'aria-hidden': 'true' }, [iconChevron()])
 
-  // id=435 §二.1 mockup order: badges, topic, action icons, THEN time.
+  // id=435 §三.6 mockup order: id -> From/To stack -> topic+tags -> action
+  // icons -> time. The standalone chevron indicator (id=434 §九) is removed
+  // per §三.5 — row-click-to-expand is unchanged, it just no longer has a
+  // dedicated visual "button" implying a second way to trigger the same thing.
   const rowMain = el(
     'div',
     { class: 'wb-row-main', role: 'button', tabindex: '0', 'aria-expanded': String(isExpanded) },
-    [fromBadge, toBadge, topicEl, rowActions, timeEl, chevron]
+    [idEl, fromToStack, topicLine, rowActions, timeEl]
   )
 
   const toggle = () => {
@@ -1046,7 +1053,7 @@ function renderRow(note, mount) {
   // If this row survived a refresh already expanded, load immediately.
   if (isExpanded && attachments) attachments.load()
 
-  return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, buildRowTagChips(note), expandSection])
+  return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, expandSection])
 }
 
 function formatTimeMeta(note) {
@@ -1488,19 +1495,19 @@ function buildIconAction({ icon, label, className = 'copy-icon-btn', onActivate 
 // id=435 §二: replaces the old "⋯" popover menu with 3 always-visible icons.
 // 複製連結/複製內文 stay grouped (both copy actions); 開啟詳情 gets a hairline
 // divider (.row-icon-nav) to mark it as the different, navigational kind.
-// Note on scope: this removes the row's OWN quick-access to "複製引用"
-// (id+title+url combined text) — that action still exists, unchanged, as
-// the detail panel's own "複製引用" button once you reach it via 開啟詳情,
-// so it isn't deleted, just no longer duplicated at the row level. 複製連結
-// (bare URL) and 複製引用 (id+title+url) stay semantically distinct per the
-// spec's acceptance item 8.
+// id=435 §三.4 (Human feedback after §二 shipped): 複製連結 reverted from a
+// bare URL back to the full id=427 "複製引用" format (id+title+url) — a bare
+// link pasted into a chat had no context to identify which note it was.
+// This deliberately makes 複製連結 and the detail panel's "複製引用" button
+// the same action again; buildNoteLink() is kept only as buildReferenceText's
+// internal URL piece, not called directly from here anymore.
 function buildRowActionIcons(note) {
   const copyLinkBtn = buildIconAction({
     icon: iconLink(),
     label: '複製連結',
     onActivate: async () => {
       try {
-        await copyToClipboard(buildNoteLink(note))
+        await copyToClipboard(buildReferenceText(note))
         return true
       } catch {
         return false

@@ -137,6 +137,12 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 }
 .wb-row-main:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
 
+/* id=435 §三.1: plain numeric id, secondary/gray, no "id=" prefix. */
+.wb-row-id { flex-shrink: 0; font-size: 0.72rem; color: #999; }
+
+/* id=435 §三.2: From/To stacked vertically (was side-by-side). */
+.wb-row-fromto { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; flex-shrink: 0; }
+
 .badge, .badge-to-set, .badge-to-unset {
   display: inline-flex;
   align-items: center;
@@ -151,8 +157,11 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .badge-to-set { background: #ecfdf5; color: #047857; }
 .badge-to-unset { background: none; color: #888; padding-left: 0; padding-right: 0; }
 
+/* id=435 §三.3: Topic + tags share one line; tags get a narrower, capped
+   share of it instead of their own full-width line underneath. */
+.wb-row-topic-line { display: flex; align-items: center; gap: 0.5rem; flex: 1 1 200px; min-width: 0; }
 .wb-topic {
-  flex: 1 1 200px;
+  flex: 1 1 auto;
   min-width: 0;
   font-weight: 700;
   font-size: 0.9rem;
@@ -164,7 +173,8 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 
 @media (max-width: 640px) {
   .wb-row-main { flex-wrap: wrap; }
-  .wb-topic { flex-basis: 100%; order: 3; white-space: normal; overflow: visible; text-overflow: clip; }
+  .wb-row-topic-line { flex-basis: 100%; order: 3; }
+  .wb-topic { white-space: normal; overflow: visible; text-overflow: clip; }
   .wb-time { order: 2; }
   /* id=435 §二.5: 3 icon buttons don't fit alongside badges/time on a narrow
      row — drop to their own trailing line rather than squeezing/overflowing. */
@@ -305,8 +315,10 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .tag-empty-hint { font-size: 0.78rem; color: #888; margin: 0.4rem 0; }
 
 /* Row-level tag chips (id=433 §三): always visible on the collapsed row,
-   clicking applies a filter — never toggles the row's own expand state. */
-.wb-row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; padding: 0 0.75rem 0.5rem; margin-top: -0.3rem; }
+   clicking applies a filter — never toggles the row's own expand state.
+   id=435 §三.3: lives inline next to Topic now (via .wb-row-topic-line),
+   capped to a narrower share so Topic keeps the majority of the line. */
+.wb-row-tags { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.3rem; flex: 0 1 auto; max-width: 42%; min-width: 0; }
 .row-tag-chip {
   background: #eef0f2;
   color: #335;
@@ -606,10 +618,6 @@ body.body-scroll-locked { overflow: hidden; }
   cursor: pointer;
 }
 .load-more-btn:hover { background: #f2f4f6; }
-
-/* id=434 §九: expand/collapse chevron on each row, rotates with aria-expanded. */
-.wb-row-chevron { display: inline-flex; align-items: center; color: #888; transition: transform 0.15s ease; flex-shrink: 0; }
-.wb-row-main[aria-expanded="true"] .wb-row-chevron { transform: rotate(180deg); }
 
 /* id=434 §二: combobox/listbox suggestion highlight. */
 .tag-suggestion-active .tag-suggestion-btn { background: #eef2f5; }
