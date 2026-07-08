@@ -22,6 +22,35 @@ export const SOURCE_LABELS = {
   other: '其他',
 }
 
+// id=434 §三.1: friendly Chinese names for recipient/From canonical values.
+// Spec gave 4 verbatim (書記長/幕僚長/幕僚長助理/大使) and explicitly invited
+// UI-Claude to help complete the rest during review — the remaining entries
+// below are CC's best-guess placeholders, not confirmed team convention, and
+// should be treated as a draft pending UI-Claude's pass.
+export const RECIPIENT_LABELS = {
+  'Scribe-Claude': '書記長',
+  'Orchestrator-Claude': '幕僚長',
+  'KG-Claude': '知識圖譜',
+  'Concept-Claude': '概念',
+  'Entity-Claude': '實體',
+  'Obsidian-Claude': 'Obsidian',
+  'ExamGen-Claude': '考題生成',
+  'UI-Claude': '介面設計',
+  'Narrative-Claude': '敘事',
+  'Feedback-Claude': '回饋',
+  'Ambassador-Claude': '大使',
+  'Tech-Claude': '技術',
+  'Human-Jenbin': 'Jenbin',
+  GPT: 'GPT',
+  Codex: 'Codex',
+  'Orchestrator-Assistant': '幕僚長助理',
+  CC: 'CC',
+}
+
+export function recipientLabel(code) {
+  return RECIPIENT_LABELS[code] || code
+}
+
 // recipient/From values stay as their canonical strings (id=429 §2.3 already
 // decided this — no separate display-name table for this POC), just grouped
 // for easier scanning in dropdowns.
@@ -59,5 +88,6 @@ export function sourceLabel(code) {
 // This POC has exactly one owner (RLS scopes every row to its creator), so a
 // NULL created_by_label always means "you" — no ambiguity to resolve.
 export function fromLabel(label) {
-  return label || '你'
+  if (!label) return '你'
+  return recipientLabel(label)
 }

@@ -37,10 +37,16 @@ export const UNSET_RECIPIENT = '__unset__'
 
 const TABLE = 'work_whiteboard'
 
-export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search } = {}) {
-  let query = supabase.from(TABLE).select('*')
+// id=434 §八: the list view only ever needs these — never extracted_to (a
+// Path B / detail-only concern). The detail panel does its own full-row
+// getNoteById() fetch below, so trimming here never starves it.
+const LIST_COLUMNS = 'id, title, content, project_key, source_type, tags, status, recipient, created_by_label, created_at, updated_at, deleted_at'
+
+export const PAGE_SIZE = 50
+
+export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search, sort, offset = 0, limit = PAGE_SIZE } = {}) {
+  let query = supabase.from(TABLE).select(LIST_COLUMNS)
   query = trash ? query.not('deleted_at', 'is', null) : query.is('deleted_at', null)
-  query = query.order('created_at', { ascending: false })
 
   if (projectKey) query = query.eq('project_key', projectKey)
   if (status) query = query.eq('status', status)
@@ -56,9 +62,38 @@ export async function listNotes({ projectKey, status, sourceType, tags, trash, f
     query = query.or(`title.ilike.%${escaped}%,content.ilike.%${escaped}%`)
   }
 
+  // id=434 §六: "最舊待整理" is a pure ordering choice here — the UI layer
+  // pairs it with the status=raw filter above rather than this function
+  // forcing it, so it never conflicts with an explicit status filter.
+  if (sort === 'created_asc') query = query.order('created_at', { ascending: true })
+  else if (sort === 'created_desc') query = query.order('created_at', { ascending: false })
+  else query = query.order('updated_at', { ascending: false })
+
+  query = query.range(offset, offset + limit - 1)
+
   const { data, error } = await query
   if (error) throw error
   return data
+}
+
+// id=434 §五: life-cycle counts for the status quick-tabs — explicitly not
+// an unread/read tracker (id=432 §九 still shelved). 'extracted' is included
+// because it's a real status humans should be able to glance at / filter by
+// even though they can never set it from the UI (id=432 §三 item 2) — that
+// rule is about the *editable* STATUSES list above, not this read-only one.
+export const STATUS_TABS = ['raw', 'triaged', 'archived', 'extracted']
+
+export async function getStatusCounts() {
+  const results = await Promise.all(
+    STATUS_TABS.map((s) => supabase.from(TABLE).select('id', { count: 'exact', head: true }).is('deleted_at', null).eq('status', s))
+  )
+  const counts = {}
+  STATUS_TABS.forEach((s, i) => {
+    const { count, error } = results[i]
+    if (error) throw error
+    counts[s] = count || 0
+  })
+  return counts
 }
 
 // Deep-link lookup: intentionally does NOT filter deleted_at, so callers can

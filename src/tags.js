@@ -26,10 +26,26 @@ export function normalizeTag(raw) {
   return ASCII_RE.test(stripped) ? stripped.toLowerCase() : stripped
 }
 
-// Display form: ascii tags show with a capitalized first letter; CJK is
-// already the canonical form, so it round-trips unchanged.
+// Pure display-layer glossary (id=434 §一) — storage form is untouched, this
+// only fixes acronyms that read oddly under plain capitalize-first-letter
+// (rls -> Rls). Extend as new abbreviations show up; never needs a migration.
+const TAG_DISPLAY_NAMES = {
+  rls: 'RLS',
+  uiux: 'UI/UX',
+  nec: 'NEC',
+  vur: 'VUR',
+  api: 'API',
+  sql: 'SQL',
+  pdf: 'PDF',
+  jwt: 'JWT',
+}
+
+// Display form: glossary hit wins; otherwise ascii tags show with a
+// capitalized first letter; CJK is already the canonical form, so it
+// round-trips unchanged.
 export function displayTag(stored) {
   if (!stored) return ''
+  if (TAG_DISPLAY_NAMES[stored]) return TAG_DISPLAY_NAMES[stored]
   if (ASCII_RE.test(stored)) return stored.charAt(0).toUpperCase() + stored.slice(1)
   return stored
 }
@@ -52,10 +68,7 @@ export function validateNewTag(raw, existingTags) {
 
 const TABLE = 'work_whiteboard'
 
-// Aggregates tag -> {count, lastUsed} across the current user's own
-// non-deleted notes for autocomplete + 常用標籤 (id=433 §三/§五). RLS scopes
-// the select to rows the caller owns, so no extra filtering is needed here.
-export async function getTagStats() {
+async function fetchTagStats() {
   const { data, error } = await supabase.from(TABLE).select('tags, created_at').is('deleted_at', null)
   if (error) throw error
   const stats = new Map()
@@ -77,6 +90,43 @@ export async function getTagStats() {
     }
   }
   return [...stats.values()]
+}
+
+// Shared cache (id=434 §七) — every tag chip editor / common-tags block on
+// the page used to call getTagStats() independently. One TTL'd cache + a
+// shared in-flight promise means simultaneous callers (e.g. Compose + filter
+// popover mounting together) trigger exactly one query, not one each.
+const CACHE_TTL_MS = 3 * 60 * 1000
+let cachedStats = null
+let cachedAt = 0
+let inFlight = null
+
+// Aggregates tag -> {count, lastUsed} across the current user's own
+// non-deleted notes for autocomplete + 常用標籤 (id=433 §三/§五). RLS scopes
+// the select to rows the caller owns, so no extra filtering is needed here.
+export async function getTagStats() {
+  if (cachedStats && Date.now() - cachedAt < CACHE_TTL_MS) return cachedStats
+  if (inFlight) return inFlight
+  inFlight = fetchTagStats()
+    .then((stats) => {
+      cachedStats = stats
+      cachedAt = Date.now()
+      inFlight = null
+      return stats
+    })
+    .catch((err) => {
+      inFlight = null
+      throw err
+    })
+  return inFlight
+}
+
+// Called after any write that touches `tags` (create/update) so the next
+// read reflects it immediately instead of waiting out the TTL.
+export function invalidateTagStats() {
+  cachedStats = null
+  cachedAt = 0
+  inFlight = null
 }
 
 // Autocomplete ranking (id=433 §一.3): ① most recently used ② highest count

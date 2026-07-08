@@ -10,8 +10,7 @@ body {
 .login { text-align: center; margin-top: 4rem; }
 .login button { padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
 
-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-.who { display: flex; gap: 0.75rem; align-items: center; font-size: 0.9rem; color: #555; }
+header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
 
 /* Two-column desktop layout: bigger form left, compact card wall right. Stacks on narrow screens. */
 .board-grid { display: grid; grid-template-columns: minmax(380px, 520px) 1fr; gap: 1.5rem; align-items: start; }
@@ -246,8 +245,9 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   line-height: 1;
   color: #666;
   padding: 0.25rem 0.4rem;
-  min-width: 32px;
-  min-height: 32px;
+  /* id=434 §四: was 32px — bumped to match the app's other touch targets. */
+  min-width: 44px;
+  min-height: 44px;
 }
 .card-menu-popover {
   position: absolute;
@@ -584,4 +584,92 @@ body.body-scroll-locked { overflow: hidden; }
   cursor: pointer;
   color: #0f766e;
   white-space: nowrap;
+}
+
+/* id=434 §九: shared inline-SVG icon sizing. Icons always sit next to a
+   visible text label or tooltip (never the sole identifier for an action). */
+.icon { width: 16px; height: 16px; flex-shrink: 0; }
+.wba-copy-btn, .wba-action-btn { display: inline-flex; align-items: center; justify-content: center; }
+
+/* id=434 §五: status quick-tabs, sit above the filter bar. Life-cycle counts
+   only — not an unread tracker (id=432 §九). */
+.status-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
+.status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #444;
+}
+.status-tab:hover { background: #f2f4f6; }
+.status-tab.active { background: #0f766e; border-color: #0f766e; color: #fff; }
+.status-tab-count { font-size: 0.72rem; color: inherit; opacity: 0.75; }
+
+/* id=434 §八: pagination "load more" control below the list. */
+.load-more-btn {
+  display: block;
+  width: 100%;
+  margin-top: 0.6rem;
+  padding: 0.5rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  color: #444;
+  cursor: pointer;
+}
+.load-more-btn:hover { background: #f2f4f6; }
+
+/* id=434 §九: expand/collapse chevron on each row, rotates with aria-expanded. */
+.wb-row-chevron { display: inline-flex; align-items: center; color: #888; transition: transform 0.15s ease; flex-shrink: 0; }
+.wb-row-main[aria-expanded="true"] .wb-row-chevron { transform: rotate(180deg); }
+
+/* id=434 §二: combobox/listbox suggestion highlight. */
+.tag-suggestion-active .tag-suggestion-btn { background: #eef2f5; }
+
+/* id=434 §十: header redesign — title+tagline, email tucked into a user menu. */
+.header-titles h1 { margin: 0; font-size: 1.4rem; }
+.header-tagline { margin: 0.15rem 0 0; font-size: 0.8rem; color: #777; }
+.user-menu { position: relative; }
+.user-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  background: #eef0f2;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  color: #445;
+}
+.user-menu-btn:hover { background: #dfe3e8; }
+.user-menu-popover {
+  position: absolute;
+  top: 2.6rem;
+  right: 0;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  padding: 0.6rem;
+  min-width: 200px;
+  z-index: 20;
+}
+.user-menu-popover.hidden { display: none; }
+.user-menu-email { font-size: 0.8rem; color: #555; margin-bottom: 0.5rem; word-break: break-all; }
+.user-menu-signout {
+  width: 100%;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  color: #333;
 }

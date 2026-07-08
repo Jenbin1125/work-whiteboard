@@ -3,9 +3,12 @@ import {
   PROJECT_KEYS,
   SOURCE_TYPES,
   STATUSES,
+  STATUS_TABS,
   RECIPIENTS,
   UNSET_RECIPIENT,
+  PAGE_SIZE,
   listNotes,
+  getStatusCounts,
   createNote,
   updateNote,
   updateStatus,
@@ -17,9 +20,10 @@ import {
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
-import { statusLabel, projectLabel, sourceLabel, fromLabel, RECIPIENT_GROUPS } from './labels.js'
+import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
-import { normalizeTag, displayTag, validateNewTag, getTagStats, rankTagSuggestions } from './tags.js'
+import { normalizeTag, displayTag, validateNewTag, getTagStats, invalidateTagStats, rankTagSuggestions } from './tags.js'
+import { iconUser, iconLink, iconPaperclip, iconTrash, iconChevron } from './icons.js'
 import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_BYTES,
@@ -65,7 +69,7 @@ function debounce(fn, ms) {
 }
 
 let currentSession = null
-let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '' }
+let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: undefined }
 let activeNoteId = null
 let detailPanelEl = null
 let listMountEl = null
@@ -75,6 +79,16 @@ let copyInFlight = false
 // chips (id=433 §三.2) push a tag into the filter state + popover editor
 // without threading the filter closures through renderRow's call chain.
 let addTagFilterFn = null
+// Same lazy-binding pattern as addTagFilterFn, but for the id=434 §五 status
+// quick-tabs <-> filter popover's status <select> staying in sync regardless
+// of which one triggered the change.
+let setStatusFilterFn = null
+let statusTabsRef = null
+// id=434 §八: pagination state for the current filtered view. Reset to page
+// 1 by refreshList(); loadMoreNotes() appends the next page onto this.
+let currentNotes = []
+let hasMoreNotes = false
+let tagEditorSeq = 0
 // Which rows currently have their Payload accordion open. Keyed by note id
 // so it survives refreshList() rebuilding the DOM (e.g. after a status
 // change or delete on that same row) instead of silently re-collapsing.
@@ -102,15 +116,53 @@ function renderLogin() {
   ])
 }
 
+// id=434 §十: title + tagline replace the old technical-feeling "Work
+// Whiteboard" heading; email moves behind this menu so the main screen reads
+// less like an admin console. Note: the spec's mockup also lists "同步狀態"
+// (sync status) next to the user menu — skipped here since this app has no
+// underlying sync/offline state to report; adding a fake always-synced badge
+// would just be misleading UI, not a real status.
+function buildUserMenu() {
+  const popover = el('div', { class: 'user-menu-popover hidden' })
+  popover.appendChild(el('div', { class: 'user-menu-email', text: currentSession.user.email || '' }))
+  popover.appendChild(el('button', { type: 'button', class: 'user-menu-signout', text: '登出', onclick: () => signOut() }))
+
+  const close = () => {
+    popover.classList.add('hidden')
+    if (openMenuCloser === close) openMenuCloser = null
+  }
+  const btn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'user-menu-btn',
+      'aria-label': '使用者選單',
+      title: currentSession.user.email || '使用者選單',
+      onclick: (e) => {
+        e.stopPropagation()
+        const wasHidden = popover.classList.contains('hidden')
+        if (openMenuCloser) openMenuCloser()
+        if (wasHidden) {
+          popover.classList.remove('hidden')
+          openMenuCloser = close
+        }
+      },
+    },
+    [iconUser()]
+  )
+
+  return el('div', { class: 'user-menu' }, [btn, popover])
+}
+
 function renderBoard() {
   const container = el('div', { class: 'board' })
 
   const header = el('header', {}, [
-    el('h1', { text: 'Work Whiteboard' }),
-    el('div', { class: 'who' }, [
-      el('span', { text: currentSession.user.email || '' }),
-      el('button', { text: '登出', onclick: () => signOut() }),
+    el('div', { class: 'header-titles' }, [
+      el('h1', { text: '工作白板' }),
+      el('p', { class: 'header-tagline', text: '快速留下、稍後整理' }),
     ]),
+    buildUserMenu(),
   ])
   container.appendChild(header)
 
@@ -119,7 +171,8 @@ function renderBoard() {
 
   const isMobile = window.matchMedia('(max-width: 900px)').matches
   const composeDetails = renderNoteForm({ startOpen: !isMobile })
-  const listCol = el('div', { class: 'list-col' }, [renderFilters(listMount), listMount])
+  const statusTabs = buildStatusTabs()
+  const listCol = el('div', { class: 'list-col' }, [statusTabs.element, renderFilters(listMount), listMount])
   const formCol = el('div', { class: 'form-col' }, [composeDetails])
 
   container.appendChild(el('div', { class: 'board-grid' }, [formCol, listCol]))
@@ -204,7 +257,9 @@ function renderNoteForm({ startOpen }) {
       tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
       clearDraft()
+      invalidateTagStats()
       if (listMountEl) refreshList(listMountEl)
+      if (statusTabsRef) statusTabsRef.reload()
       showToast('已建立便利貼', {
         actionLabel: '開啟詳情',
         onAction: () => navigateToNote(newNote.id),
@@ -231,7 +286,13 @@ function renderNoteForm({ startOpen }) {
     },
   })
 
-  const fromField = el('label', { class: 'field-label' }, [el('span', { text: 'From' }), fromSelect])
+  // id=434 §三.2: renamed from "From" + a fixed hint clarifying this is
+  // display/routing metadata, not an authorization or ownership change
+  // (id=432 〇 already established that rule; this just surfaces it in the
+  // UI). Kept as a sibling <p>, not nested inside the <label>, so the label
+  // still only wraps its own control for correct label-for association.
+  const fromField = el('label', { class: 'field-label' }, [el('span', { text: '發件身分' }), fromSelect])
+  const fromHint = el('p', { class: 'field-hint', text: '此欄是顯示與路由 metadata，不會改變資料擁有者。' })
   const moreFields = el('div', { class: 'row' }, [
     labeledField('專案', projectSelect),
     labeledField('來源', sourceSelect),
@@ -243,6 +304,7 @@ function renderNoteForm({ startOpen }) {
   form.appendChild(contentInput)
   form.appendChild(titleInput)
   form.appendChild(fromField)
+  form.appendChild(fromHint)
   form.appendChild(moreDetails)
   form.appendChild(el('div', { class: 'compose-submit-row' }, [submitBtn, phiNote]))
   form.appendChild(status)
@@ -264,44 +326,55 @@ function labeledField(labelText, control) {
   return el('label', { class: 'field-label field-label-compact' }, [el('span', { text: labelText }), control])
 }
 
+// id=434 §三.1: Chinese name as the primary label, canonical value as a
+// small parenthetical secondary — native <option> can't do two-line text, so
+// this is the best approximation of "中文名為主，canonical 值為次要小字".
 function buildRecipientOptions() {
   const opts = []
   for (const group of RECIPIENT_GROUPS) {
     const optGroup = el('optgroup', { label: group.label })
-    group.values.forEach((v) => optGroup.appendChild(option(v, v)))
+    group.values.forEach((v) => optGroup.appendChild(option(v, `${recipientLabel(v)}（${v}）`)))
     opts.push(optGroup)
   }
   return opts
 }
 
-// --- tag chip editor (id=433 §一/§二/§六): shared by Compose, the detail
-// edit form, and the filter popover's tag multi-select. -------------------
+// --- tag chip editor (id=433 §一/§二/§六, id=434 §二/§七): shared by
+// Compose, the detail edit form, and the filter popover's tag multi-select.
+// The suggestion dropdown is a standard combobox/listbox: ↓/↑ moves the
+// highlighted option, Enter picks it (or adds the typed text raw if nothing
+// is highlighted), Esc closes the list without touching the typed text, Tab
+// is left untouched. getTagStats() itself is the shared TTL'd cache (tags.js
+// id=434 §七) — every render call here goes through it fresh rather than
+// keeping a separate per-editor-instance cache that could go stale after
+// another editor's write invalidates the shared one. -----------------------
 function buildTagChipEditor({ initialTags = [], onChange } = {}) {
   let tags = [...initialTags]
-  let statsCache = null
-  let statsLoaded = false
+  // { tag, count?, raw?, isNew } — the currently rendered suggestion list,
+  // in display order, so keyboard nav can index into it directly.
+  let suggestionEntries = []
+  let highlightedIndex = -1
+  const editorId = 'tag-editor-' + ++tagEditorSeq
 
   const row = el('div', { class: 'tag-chips-row' })
-  const input = el('input', { type: 'text', class: 'tag-chip-input', placeholder: '輸入標籤…' })
+  const input = el('input', {
+    type: 'text',
+    class: 'tag-chip-input',
+    placeholder: '輸入標籤…',
+    role: 'combobox',
+    'aria-expanded': 'false',
+    'aria-autocomplete': 'list',
+    'aria-haspopup': 'listbox',
+    'aria-controls': editorId + '-listbox',
+  })
   row.appendChild(input)
   const dupHint = el('span', { class: 'tag-dup-hint hidden', text: '已經加入這個標籤' })
   const limitHint = el('span', { class: 'tag-dup-hint hidden' })
-  const suggestionsEl = el('ul', { class: 'tag-suggestions hidden' })
+  const suggestionsEl = el('ul', { id: editorId + '-listbox', class: 'tag-suggestions hidden', role: 'listbox', 'aria-label': '標籤建議' })
   const recentEl = el('div', { class: 'tag-recent hidden' })
 
-  function loadStats() {
-    if (statsLoaded) return Promise.resolve(statsCache)
-    return getTagStats()
-      .then((s) => {
-        statsCache = s
-        statsLoaded = true
-        return s
-      })
-      .catch(() => {
-        statsCache = []
-        statsLoaded = true
-        return []
-      })
+  function optionId(i) {
+    return editorId + '-opt-' + i
   }
 
   function renderChips() {
@@ -342,98 +415,135 @@ function buildTagChipEditor({ initialTags = [], onChange } = {}) {
     tags = [...tags, result.tag]
     renderChips()
     onChange && onChange([...tags])
-    renderSuggestions()
     return true
   }
 
-  function renderSuggestions() {
-    const q = input.value.trim()
-    if (!q || !statsLoaded) {
-      suggestionsEl.classList.add('hidden')
-      suggestionsEl.replaceChildren()
+  function closeSuggestions() {
+    suggestionEntries = []
+    highlightedIndex = -1
+    suggestionsEl.replaceChildren()
+    suggestionsEl.classList.add('hidden')
+    input.setAttribute('aria-expanded', 'false')
+    input.removeAttribute('aria-activedescendant')
+  }
+
+  function chooseEntry(entry) {
+    tryAdd(entry.isNew ? entry.raw : entry.tag)
+    input.value = ''
+    closeSuggestions()
+    input.focus()
+  }
+
+  function drawSuggestions() {
+    if (!suggestionEntries.length) {
+      closeSuggestions()
       return
     }
-    const ranked = rankTagSuggestions(statsCache, q).filter((s) => !tags.includes(s.tag))
-    const items = ranked.slice(0, 8).map((s) =>
-      el('li', {}, [
+    const items = suggestionEntries.map((entry, i) => {
+      const selected = i === highlightedIndex
+      const btn = entry.isNew
+        ? el('button', { type: 'button', class: 'tag-suggestion-btn tag-suggestion-new', text: `建立新標籤「${entry.raw}」`, tabindex: '-1', onclick: (e) => { e.stopPropagation(); chooseEntry(entry) } })
+        : el(
+            'button',
+            { type: 'button', class: 'tag-suggestion-btn', tabindex: '-1', onclick: (e) => { e.stopPropagation(); chooseEntry(entry) } },
+            [el('span', { text: displayTag(entry.tag) }), el('span', { class: 'tag-suggestion-count', text: entry.count + ' 則' })]
+          )
+      return el('li', { id: optionId(i), role: 'option', 'aria-selected': String(selected), class: selected ? 'tag-suggestion-active' : '' }, [btn])
+    })
+    suggestionsEl.replaceChildren(...items)
+    suggestionsEl.classList.remove('hidden')
+    input.setAttribute('aria-expanded', 'true')
+    if (highlightedIndex >= 0) input.setAttribute('aria-activedescendant', optionId(highlightedIndex))
+    else input.removeAttribute('aria-activedescendant')
+  }
+
+  // Re-fetches through the shared cache every time (cheap once warm/cached)
+  // rather than latching a local "already loaded" flag, so an invalidation
+  // from another editor's write is picked up on the very next keystroke.
+  async function renderSuggestions() {
+    const q = input.value.trim()
+    if (!q) {
+      closeSuggestions()
+      return
+    }
+    const stats = await getTagStats().catch(() => [])
+    if (input.value.trim() !== q) return // stale response, input changed while awaiting
+    const ranked = rankTagSuggestions(stats, q).filter((s) => !tags.includes(s.tag))
+    const entries = ranked.slice(0, 8).map((s) => ({ tag: s.tag, count: s.count, isNew: false }))
+    const normalizedQ = normalizeTag(q)
+    if (normalizedQ && !entries.some((e) => e.tag === normalizedQ) && !tags.includes(normalizedQ)) {
+      entries.push({ tag: normalizedQ, raw: q, isNew: true })
+    }
+    suggestionEntries = entries
+    highlightedIndex = -1
+    drawSuggestions()
+  }
+
+  async function renderRecent() {
+    const stats = await getTagStats().catch(() => [])
+    const recent = [...stats].sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1)).slice(0, 5)
+    if (!recent.length) {
+      recentEl.classList.add('hidden')
+      return
+    }
+    recentEl.replaceChildren(
+      el('span', { class: 'tag-recent-label', text: '最近使用：' }),
+      ...recent.map((s) =>
         el('button', {
           type: 'button',
-          class: 'tag-suggestion-btn',
+          class: 'tag-recent-btn',
+          text: displayTag(s.tag),
           onclick: (e) => {
             e.stopPropagation()
             tryAdd(s.tag)
-            input.value = ''
-            suggestionsEl.classList.add('hidden')
-            input.focus()
           },
-        }, [el('span', { text: displayTag(s.tag) }), el('span', { class: 'tag-suggestion-count', text: s.count + ' 則' })]),
-      ])
+        })
+      )
     )
-    const normalizedQ = normalizeTag(q)
-    if (normalizedQ && !ranked.some((s) => s.tag === normalizedQ) && !tags.includes(normalizedQ)) {
-      items.push(
-        el('li', {}, [
-          el('button', {
-            type: 'button',
-            class: 'tag-suggestion-btn tag-suggestion-new',
-            text: `建立新標籤「${q.trim()}」`,
-            onclick: (e) => {
-              e.stopPropagation()
-              tryAdd(q)
-              input.value = ''
-              suggestionsEl.classList.add('hidden')
-              input.focus()
-            },
-          }),
-        ])
-      )
-    }
-    suggestionsEl.replaceChildren(...items)
-    suggestionsEl.classList.toggle('hidden', items.length === 0)
-  }
-
-  function renderRecent() {
-    loadStats().then((stats) => {
-      const recent = [...stats].sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1)).slice(0, 5)
-      if (!recent.length) {
-        recentEl.classList.add('hidden')
-        return
-      }
-      recentEl.replaceChildren(
-        el('span', { class: 'tag-recent-label', text: '最近使用：' }),
-        ...recent.map((s) =>
-          el('button', {
-            type: 'button',
-            class: 'tag-recent-btn',
-            text: displayTag(s.tag),
-            onclick: (e) => {
-              e.stopPropagation()
-              tryAdd(s.tag)
-            },
-          })
-        )
-      )
-      recentEl.classList.remove('hidden')
-    })
+    recentEl.classList.remove('hidden')
   }
 
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ',') {
+    if (e.key === 'ArrowDown') {
+      if (!suggestionEntries.length) return
       e.preventDefault()
+      highlightedIndex = (highlightedIndex + 1) % suggestionEntries.length
+      drawSuggestions()
+    } else if (e.key === 'ArrowUp') {
+      if (!suggestionEntries.length) return
+      e.preventDefault()
+      highlightedIndex = (highlightedIndex - 1 + suggestionEntries.length) % suggestionEntries.length
+      drawSuggestions()
+    } else if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault()
+      if (highlightedIndex >= 0 && suggestionEntries[highlightedIndex]) {
+        chooseEntry(suggestionEntries[highlightedIndex])
+        return
+      }
       const v = input.value.replace(/,$/, '')
       if (v.trim()) tryAdd(v)
       input.value = ''
-      renderSuggestions()
+      closeSuggestions()
+    } else if (e.key === 'Escape') {
+      // Only intercept when there's actually a list to close — otherwise let
+      // Esc bubble (e.g. to the Compose <details>'s own close-on-Esc). When
+      // we DO close it, stopPropagation too — without it the same keypress
+      // still bubbles up and closes the whole Compose panel out from under
+      // the user, which is worse than doing nothing.
+      if (suggestionEntries.length) {
+        e.preventDefault()
+        e.stopPropagation()
+        closeSuggestions()
+      }
     } else if (e.key === 'Backspace' && !input.value && tags.length) {
       tags = tags.slice(0, -1)
       renderChips()
       onChange && onChange([...tags])
     }
+    // Tab: no handling — default focus-move proceeds untouched.
   })
   input.addEventListener('input', renderSuggestions)
-  input.addEventListener('focus', () => {
-    loadStats().then(renderSuggestions)
-  })
+  input.addEventListener('focus', renderSuggestions)
   input.addEventListener('click', (e) => e.stopPropagation())
 
   renderChips()
@@ -533,6 +643,51 @@ function tagsEmptyMessage(tags) {
   return `沒有同時包含「${names.join('」與「')}」的便利貼。移除一個標籤試試。`
 }
 
+// id=434 §五: life-cycle counts, not an unread tracker (id=432 §九 still
+// shelved) — clicking a tab applies the same status filter the popover's
+// <select> uses (see setStatus() inside renderFilters), just as a faster
+// entry point.
+function buildStatusTabs() {
+  const wrap = el('div', { class: 'status-tabs' })
+
+  function updateActive() {
+    wrap.querySelectorAll('.status-tab').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.status === filters.status)
+    })
+  }
+
+  function draw(counts) {
+    wrap.replaceChildren(
+      ...STATUS_TABS.map((s) =>
+        el(
+          'button',
+          {
+            type: 'button',
+            class: 'status-tab' + (filters.status === s ? ' active' : ''),
+            'data-status': s,
+            onclick: () => setStatusFilterFn && setStatusFilterFn(s),
+          },
+          [el('span', { text: statusLabel(s) }), el('span', { class: 'status-tab-count', text: String(counts[s] ?? 0) })]
+        )
+      )
+    )
+  }
+
+  async function reload() {
+    try {
+      draw(await getStatusCounts())
+    } catch {
+      // Non-critical: counts failing to load shouldn't block the list itself.
+      wrap.replaceChildren()
+    }
+  }
+
+  reload()
+  const ref = { element: wrap, reload, updateActive }
+  statusTabsRef = ref
+  return ref
+}
+
 // --- filters: search bar + popover + active-filter chips (id=432 §六) ------
 function renderFilters(listMount) {
   const searchInput = el('input', { type: 'text', class: 'wb-search', placeholder: '搜尋標題或內容…' })
@@ -546,8 +701,10 @@ function renderFilters(listMount) {
   const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, projectLabel(k)))])
   const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, statusLabel(k)))])
   const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
-  const fromInput = el('input', { type: 'text', placeholder: 'From 篩選' })
+  const fromInput = el('input', { type: 'text', placeholder: '發件身分篩選' })
   const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
+  const sortSelect = el('select', {}, [option('updated_desc', '最近更新'), option('created_desc', '最新建立'), option('oldest_raw', '最舊待整理')])
+  sortSelect.value = 'updated_desc'
 
   const tagFilterEditor = buildTagChipEditor({
     initialTags: [],
@@ -563,8 +720,9 @@ function renderFilters(listMount) {
     labeledField('專案', projectSelect),
     labeledField('狀態', statusSelect),
     labeledField('來源', sourceSelect),
-    labeledField('From', fromInput),
+    labeledField('發件身分', fromInput),
     labeledField('To', toSelect),
+    labeledField('排序', sortSelect),
     labeledField('標籤', tagFilterEditor.element),
     commonTagsBlock.element,
     el('button', { type: 'button', class: 'clear-filters-btn', text: '清除全部', onclick: clearAllFilters }),
@@ -578,11 +736,17 @@ function renderFilters(listMount) {
     if (wasHidden) commonTagsBlock.reload()
   })
 
+  // Status is deliberately NOT included here — it has its own setStatus()
+  // below, because it can be driven by three different controls (this
+  // select, the status quick-tabs, and the "最舊待整理" sort preset) and one
+  // of those (the tabs) can set a value ('extracted') this <select> has no
+  // option for. If apply() also copied statusSelect.value on every change,
+  // any unrelated filter edit would silently stomp an extracted-tab filter
+  // back to '' the moment the user touched another control.
   function apply() {
     filters = {
       ...filters,
       projectKey: projectSelect.value,
-      status: statusSelect.value,
       source: sourceSelect.value,
       from: fromInput.value.trim(),
       to: toSelect.value,
@@ -592,16 +756,50 @@ function renderFilters(listMount) {
     refreshList(listMount)
   }
 
+  // Single source of truth for filters.status — keeps the <select>, the
+  // quick-tabs' active state, and the active-filter chip all in sync
+  // regardless of which one triggered the change.
+  function setStatus(status) {
+    filters = { ...filters, status }
+    statusSelect.value = STATUSES.includes(status) ? status : ''
+    renderChips()
+    refreshList(listMount)
+    if (statusTabsRef) statusTabsRef.updateActive()
+  }
+
+  // id=434 §六: "最舊待整理" is a preset, not just an ORDER BY — it also
+  // pins the status filter to raw so it actually reads as "clear the inbox"
+  // (listNotes() itself never forces this; see whiteboard.js's note on why).
+  // Switching away from it afterward does NOT auto-clear status=raw — that'd
+  // be surprising the other direction (silently dropping a filter the user
+  // set), so status stays until cleared explicitly like any other filter.
+  function applySort() {
+    const val = sortSelect.value
+    if (val === 'oldest_raw') {
+      filters = { ...filters, sort: 'created_asc' }
+      setStatus('raw')
+      return
+    } else if (val === 'created_desc') {
+      filters = { ...filters, sort: 'created_desc' }
+    } else {
+      filters = { ...filters, sort: undefined }
+    }
+    renderChips()
+    refreshList(listMount)
+  }
+
   function clearAllFilters() {
     searchInput.value = ''
     projectSelect.value = ''
-    statusSelect.value = ''
     sourceSelect.value = ''
     fromInput.value = ''
     toSelect.value = ''
+    sortSelect.value = 'updated_desc'
     tagFilterEditor.setTags([])
-    filters = { ...filters, tags: [] }
+    filters = { ...filters, tags: [], sort: undefined, status: '' }
+    statusSelect.value = ''
     apply()
+    if (statusTabsRef) statusTabsRef.updateActive()
   }
 
   function clearOne(key, control, value) {
@@ -631,14 +829,19 @@ function renderFilters(listMount) {
 
   addTagFilterFn = addTagToFilter
 
+  // id=434 §五: lets the status quick-tabs (built alongside renderFilters in
+  // renderBoard) drive the same filters.status the popover's <select> does —
+  // clicking the active tab again clears it, matching a normal toggle chip.
+  setStatusFilterFn = (status) => setStatus(filters.status === status ? '' : status)
+
   function renderChips() {
     const chips = []
     if (filters.search) chips.push(['搜尋: ' + filters.search, () => clearOne('search', searchInput, '')])
     if (filters.projectKey) chips.push(['專案: ' + projectLabel(filters.projectKey), () => clearOne('projectKey', projectSelect, '')])
-    if (filters.status) chips.push(['狀態: ' + statusLabel(filters.status), () => clearOne('status', statusSelect, '')])
+    if (filters.status) chips.push(['狀態: ' + statusLabel(filters.status), () => setStatus('')])
     if (filters.source) chips.push(['來源: ' + sourceLabel(filters.source), () => clearOne('source', sourceSelect, '')])
-    if (filters.from) chips.push(['From: ' + filters.from, () => clearOne('from', fromInput, '')])
-    if (filters.to) chips.push(['To: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : filters.to), () => clearOne('to', toSelect, '')])
+    if (filters.from) chips.push(['發件身分: ' + filters.from, () => clearOne('from', fromInput, '')])
+    if (filters.to) chips.push(['To: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : recipientLabel(filters.to)), () => clearOne('to', toSelect, '')])
     filters.tags.forEach((t) => chips.push(['標籤: ' + displayTag(t), () => removeTagFromFilter(t)]))
 
     chipsRow.replaceChildren(
@@ -654,8 +857,9 @@ function renderFilters(listMount) {
   const debouncedApply = debounce(apply, 300)
   searchInput.addEventListener('input', debouncedApply)
   projectSelect.addEventListener('change', apply)
-  statusSelect.addEventListener('change', apply)
+  statusSelect.addEventListener('change', () => setStatus(statusSelect.value))
   sourceSelect.addEventListener('change', apply)
+  sortSelect.addEventListener('change', applySort)
   const debouncedFrom = debounce(apply, 300)
   fromInput.addEventListener('input', debouncedFrom)
   toSelect.addEventListener('change', apply)
@@ -674,25 +878,49 @@ function hasActiveFilters() {
   return !!(filters.projectKey || filters.status || filters.source || filters.from || filters.to || filters.search || (filters.tags && filters.tags.length))
 }
 
+function buildListParams() {
+  return {
+    projectKey: filters.projectKey,
+    status: filters.status,
+    sourceType: filters.source,
+    tags: filters.tags,
+    trash: filters.trash,
+    fromLabel: filters.from,
+    to: filters.to,
+    search: filters.search,
+    sort: filters.sort,
+  }
+}
+
+// id=434 §八: the "page 1" entry point — every filter/sort/trash-toggle
+// change calls this (never loadMoreNotes), so pagination naturally resets
+// whenever the query itself changes.
 async function refreshList(mount) {
   mount.replaceChildren(el('p', { text: '載入中…' }))
   try {
-    const notes = await listNotes({
-      projectKey: filters.projectKey,
-      status: filters.status,
-      sourceType: filters.source,
-      tags: filters.tags,
-      trash: filters.trash,
-      fromLabel: filters.from,
-      to: filters.to,
-      search: filters.search,
-    })
-    mount.replaceChildren(renderList(notes, mount))
+    const notes = await listNotes({ ...buildListParams(), offset: 0, limit: PAGE_SIZE })
+    currentNotes = notes
+    hasMoreNotes = notes.length === PAGE_SIZE
+    mount.replaceChildren(renderList(currentNotes, mount))
     applyHighlight()
     return notes
   } catch (err) {
     mount.replaceChildren(el('p', { class: 'error', text: friendlyErrorMessage(err) }))
+    currentNotes = []
+    hasMoreNotes = false
     return []
+  }
+}
+
+async function loadMoreNotes(mount) {
+  try {
+    const more = await listNotes({ ...buildListParams(), offset: currentNotes.length, limit: PAGE_SIZE })
+    currentNotes = [...currentNotes, ...more]
+    hasMoreNotes = more.length === PAGE_SIZE
+    mount.replaceChildren(renderList(currentNotes, mount))
+    applyHighlight()
+  } catch (err) {
+    showToast(friendlyErrorMessage(err))
   }
 }
 
@@ -709,7 +937,10 @@ function renderList(notes, mount) {
   }
 
   const items = notes.map((note) => renderRow(note, mount))
-  return el('ul', { class: 'wb-list' }, items)
+  const listEl = el('ul', { class: 'wb-list' }, items)
+  if (!hasMoreNotes) return listEl
+  const loadMoreBtn = el('button', { type: 'button', class: 'load-more-btn', text: '載入更多', onclick: () => loadMoreNotes(mount) })
+  return el('div', {}, [listEl, loadMoreBtn])
 }
 
 // id=429: horizontal inbox row. Collapsed = From/To badges + Topic + time
@@ -761,13 +992,10 @@ function renderRow(note, mount) {
   if (attachments) expandChildren.push(attachments.element)
   const expandSection = el('div', { class: isExpanded ? 'wb-row-expand' : 'wb-row-expand hidden' }, expandChildren)
 
-  const fromBadge = el('span', { class: 'badge badge-from' }, [
-    el('span', { 'aria-hidden': 'true', text: '👤' }),
-    el('span', { text: fromLabel(note.created_by_label) }),
-  ])
+  const fromBadge = el('span', { class: 'badge badge-from' }, [iconUser(), el('span', { text: fromLabel(note.created_by_label) })])
 
   const toBadge = note.recipient
-    ? el('span', { class: 'badge badge-to-set' }, [el('span', { 'aria-hidden': 'true', text: '👤' }), el('span', { text: note.recipient })])
+    ? el('span', { class: 'badge badge-to-set' }, [iconUser(), el('span', { text: recipientLabel(note.recipient) })])
     : el('span', { class: 'badge-to-unset', text: '未指名' })
 
   const topicText = note.title && note.title.trim() ? note.title : (note.content || '').split('\n')[0].trim() || '(無內容)'
@@ -776,11 +1004,15 @@ function renderRow(note, mount) {
   const timeEl = el('span', { class: 'wb-time', text: new Date(note.created_at).toLocaleString() })
 
   const menu = buildCardMenu(note)
+  // id=434 §九: visual expand/collapse indicator (rotates via CSS off the
+  // row's own aria-expanded, set below), pure addition alongside the
+  // existing accordion behavior — not a new interactive element.
+  const chevron = el('span', { class: 'wb-row-chevron', 'aria-hidden': 'true' }, [iconChevron()])
 
   const rowMain = el(
     'div',
     { class: 'wb-row-main', role: 'button', tabindex: '0', 'aria-expanded': String(isExpanded) },
-    [fromBadge, toBadge, topicEl, timeEl, menu]
+    [fromBadge, toBadge, topicEl, timeEl, menu, chevron]
   )
 
   const toggle = () => {
@@ -826,6 +1058,7 @@ function buildNormalActions(note, mount) {
     try {
       await updateStatus(note.id, statusSelect.value)
       refreshList(mount)
+      if (statusTabsRef) statusTabsRef.reload()
       if (activeNoteId === note.id) syncDetailFromHash()
     } catch (err) {
       showToast(friendlyErrorMessage(err))
@@ -843,6 +1076,7 @@ function buildNormalActions(note, mount) {
         await softDelete(note.id)
         expandedIds.delete(note.id)
         refreshList(mount)
+        if (statusTabsRef) statusTabsRef.reload()
         if (activeNoteId === note.id) syncDetailFromHash()
         showToast('已移到垃圾桶', {
           actionLabel: '復原',
@@ -850,6 +1084,7 @@ function buildNormalActions(note, mount) {
             try {
               await restoreNote(note.id)
               refreshList(mount)
+              if (statusTabsRef) statusTabsRef.reload()
             } catch (err) {
               showToast(friendlyErrorMessage(err))
             }
@@ -875,6 +1110,7 @@ function buildTrashActions(note, mount) {
       try {
         await restoreNote(note.id)
         refreshList(mount)
+        if (statusTabsRef) statusTabsRef.reload()
         if (activeNoteId === note.id) syncDetailFromHash()
         showToast('已復原')
       } catch (err) {
@@ -891,6 +1127,7 @@ function buildTrashActions(note, mount) {
       try {
         await hardDeleteNote(note.id)
         refreshList(mount)
+        if (statusTabsRef) statusTabsRef.reload()
         if (activeNoteId === note.id) clearNoteHash()
         showToast('已永久刪除')
       } catch (err) {
@@ -1018,7 +1255,7 @@ function buildAttachmentsSection(note) {
     await reload()
   })
 
-  container.appendChild(el('div', { class: 'wba-header' }, [el('span', { text: '📎 附件' }), counterEl]))
+  container.appendChild(el('div', { class: 'wba-header' }, [iconPaperclip(), el('span', { text: '附件' }), counterEl]))
   container.appendChild(listEl)
   container.appendChild(errorEl)
   container.appendChild(el('div', { class: 'wba-upload-row' }, [addBtn, phiNote]))
@@ -1098,41 +1335,49 @@ function buildTextPreviewToggle(att) {
 function renderAttachmentRow(att, noteId, onChanged) {
   const nameEl = el('span', { class: 'wba-name', text: att.original_name })
 
-  const copyRefBtn = el('button', {
-    class: 'wba-copy-btn',
-    type: 'button',
-    'aria-label': '複製附件引用',
-    text: '🔗',
-    onclick: async (e) => {
-      e.stopPropagation()
-      try {
-        await copyToClipboard(buildAttachmentReferenceText(noteId, att.original_name))
-        showToast('已複製附件引用')
-      } catch (err) {
-        showToast(friendlyErrorMessage(err))
-      }
+  const copyRefBtn = el(
+    'button',
+    {
+      class: 'wba-copy-btn',
+      type: 'button',
+      'aria-label': '複製附件引用',
+      title: '複製附件引用',
+      onclick: async (e) => {
+        e.stopPropagation()
+        try {
+          await copyToClipboard(buildAttachmentReferenceText(noteId, att.original_name))
+          showToast('已複製附件引用')
+        } catch (err) {
+          showToast(friendlyErrorMessage(err))
+        }
+      },
     },
-  })
+    [iconLink()]
+  )
 
-  const deleteBtn = el('button', {
-    class: 'delete-btn',
-    type: 'button',
-    text: '🗑️',
-    'aria-label': '刪除附件',
-    onclick: async (e) => {
-      e.stopPropagation()
-      // Optimistic + no confirm dialog (id=431 §七, matches the rest of the
-      // app's direct-action delete convention); reload restores state if the
-      // request actually failed server-side.
-      li.remove()
-      try {
-        await softDeleteAttachment(att.id)
-      } catch (err) {
-        showToast(friendlyErrorMessage(err))
-        onChanged()
-      }
+  const deleteBtn = el(
+    'button',
+    {
+      class: 'delete-btn',
+      type: 'button',
+      'aria-label': '刪除附件',
+      title: '刪除附件',
+      onclick: async (e) => {
+        e.stopPropagation()
+        // Optimistic + no confirm dialog (id=431 §七, matches the rest of the
+        // app's direct-action delete convention); reload restores state if the
+        // request actually failed server-side.
+        li.remove()
+        try {
+          await softDeleteAttachment(att.id)
+        } catch (err) {
+          showToast(friendlyErrorMessage(err))
+          onChanged()
+        }
+      },
     },
-  })
+    [iconTrash()]
+  )
 
   let icon
   let statusEl
@@ -1174,7 +1419,7 @@ function renderAttachmentRow(att, noteId, onChanged) {
       actions.push(button)
       extraRow = preview
     } else {
-      icon = el('span', { 'aria-hidden': 'true', text: '📎' })
+      icon = iconPaperclip()
     }
     statusEl = el('span', { class: 'wba-status wba-status-ready', text: 'ready' })
     actions.push(copyRefBtn, deleteBtn)
@@ -1244,7 +1489,7 @@ function buildCardMenu(note) {
 }
 
 document.addEventListener('click', (e) => {
-  if (openMenuCloser && !e.target.closest('.card-menu')) {
+  if (openMenuCloser && !e.target.closest('.card-menu') && !e.target.closest('.user-menu')) {
     openMenuCloser()
     openMenuCloser = null
   }
@@ -1259,7 +1504,7 @@ function buildCopyIconButton(note) {
   const DEFAULT_TOOLTIP = '複製引用'
 
   const tooltip = el('span', { class: 'copy-tooltip', 'aria-hidden': 'true', text: DEFAULT_TOOLTIP })
-  const icon = el('span', { 'aria-hidden': 'true', text: '🔗' })
+  const icon = iconLink()
   const btn = el('button', { class: 'copy-icon-btn', type: 'button', 'aria-label': DEFAULT_LABEL })
   btn.appendChild(icon)
   btn.appendChild(tooltip)
@@ -1408,6 +1653,7 @@ function renderDetailTrashMessage(note) {
       try {
         await restoreNote(note.id)
         if (listMountEl) refreshList(listMountEl)
+        if (statusTabsRef) statusTabsRef.reload()
         syncDetailFromHash()
         showToast('已復原')
       } catch (err) {
@@ -1433,20 +1679,16 @@ function renderDetailTrashMessage(note) {
 function renderDetailNote(note, { foundInList } = {}) {
   let editing = false
 
-  const copyBtn = el('button', {
-    class: 'copy-ref-btn',
-    type: 'button',
-    'aria-label': '複製白板引用',
-    text: '🔗 複製引用',
-  })
+  const copyBtnLabel = el('span', { text: '複製引用' })
+  const copyBtn = el('button', { class: 'copy-ref-btn', type: 'button', 'aria-label': '複製白板引用' }, [iconLink(), copyBtnLabel])
   copyBtn.addEventListener('click', async () => {
     const ok = await performCopy(note)
     if (ok) {
       copyBtn.classList.add('copied')
-      copyBtn.textContent = '✓ 已複製'
+      copyBtnLabel.textContent = '已複製'
       setTimeout(() => {
         copyBtn.classList.remove('copied')
-        copyBtn.textContent = '🔗 複製引用'
+        copyBtnLabel.textContent = '複製引用'
       }, 1500)
     }
   })
@@ -1469,12 +1711,14 @@ function renderDetailNote(note, { foundInList } = {}) {
       try {
         await softDelete(note.id)
         if (listMountEl) refreshList(listMountEl)
+        if (statusTabsRef) statusTabsRef.reload()
         showToast('已移到垃圾桶', {
           actionLabel: '復原',
           onAction: async () => {
             try {
               await restoreNote(note.id)
               if (listMountEl) refreshList(listMountEl)
+              if (statusTabsRef) statusTabsRef.reload()
               syncDetailFromHash()
             } catch (err) {
               showToast(friendlyErrorMessage(err))
@@ -1505,6 +1749,7 @@ function renderDetailNote(note, { foundInList } = {}) {
         await updateStatus(note.id, statusSelect.value)
         note.status = statusSelect.value
         if (listMountEl) refreshList(listMountEl)
+        if (statusTabsRef) statusTabsRef.reload()
       } catch (err) {
         showToast(friendlyErrorMessage(err))
       }
@@ -1566,6 +1811,7 @@ function renderDetailNote(note, { foundInList } = {}) {
           updated_at: new Date().toISOString(),
         })
         saveStatusEl.textContent = '已儲存'
+        invalidateTagStats()
         if (listMountEl) refreshList(listMountEl)
       } catch (err) {
         saveStatusEl.textContent = '儲存失敗（內容仍保留）：' + friendlyErrorMessage(err)
@@ -1598,9 +1844,9 @@ function renderDetailNote(note, { foundInList } = {}) {
       el('div', { class: 'detail-header-actions' }, [copyBtn, editToggleBtn]),
       el('h2', { class: 'detail-title', text: note.title || '(無標題)' }),
       el('div', { class: 'detail-badges' }, [
-        el('span', { class: 'badge badge-from' }, [el('span', { text: fromLabel(note.created_by_label) })]),
+        el('span', { class: 'badge badge-from' }, [iconUser(), el('span', { text: fromLabel(note.created_by_label) })]),
         note.recipient
-          ? el('span', { class: 'badge badge-to-set', text: note.recipient })
+          ? el('span', { class: 'badge badge-to-set' }, [iconUser(), el('span', { text: recipientLabel(note.recipient) })])
           : el('span', { class: 'badge-to-unset', text: '未指名' }),
         el('span', { class: 'tag-project', text: projectLabel(note.project_key) }),
       ]),
