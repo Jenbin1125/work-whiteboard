@@ -2120,7 +2120,14 @@ async function loadReplyContext(note, container) {
     sections.push(el('p', { class: 'flow-exception', text: '回覆鏈過大，請開完整任務樹' }))
   }
 
-  if (treeScanFailed) {
+  // GPT #124 (2nd review, residual edge case): trailLoadFailed also
+  // invalidates the pending summary, not just treeScanFailed. When the
+  // upward walk fails, rootId falls back to note.id (its own subtree),
+  // so even a *successful* scan from there only ever covers the current
+  // note's local branch — upstream siblings we never reached could still
+  // have a pending leaf. "0 pending" would be a real claim about the
+  // whole chain, which we can't make with only a partial view of it.
+  if (trailLoadFailed || treeScanFailed) {
     // Never fall through to "0 pending leaves" here — an empty nodesById
     // from a failed scan is indistinguishable from a genuinely fully-
     // resolved chain unless this is called out explicitly.
