@@ -56,9 +56,28 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .compose-more summary { font-size: 0.85rem; color: #555; cursor: pointer; }
 .compose-more .row { margin-top: 0.5rem; }
 
-/* id=435 §五.2: submit button right-aligned (was left) — position (vertical
-   order), trigger logic, and post-submit behavior are all unchanged. */
-.compose-submit-row { display: flex; justify-content: flex-end; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
+/* id=435 §五.2/§七: 送出 stays right-aligned; 附加檔案 (id=431 §十一) sits in
+   the same row, left-aligned — position (vertical order), trigger logic,
+   and post-submit behavior are all otherwise unchanged. */
+.compose-submit-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.attach-file-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: #444;
+}
+.attach-file-btn:hover { background: #f2f4f6; }
+
+/* id=431 §十一.3: staged (not-yet-uploaded) files in Compose, removable
+   before submit — reuses .tag-chip's look, this just isn't a tag. */
+.staged-files-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+.staged-files-row:empty { margin-top: 0; }
 
 /* Filters (id=432 §六): search bar + collapsible popover + active chips. */
 .filters { margin-bottom: 1rem; }

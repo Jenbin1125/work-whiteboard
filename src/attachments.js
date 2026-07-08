@@ -40,6 +40,28 @@ export function resolveMimeType(file) {
   return fallback && ALLOWED_MIME_TYPES.includes(fallback) ? fallback : null
 }
 
+// id=431 §三's four checks, factored out so both the row-expand upload flow
+// and Compose's pre-creation staging (id=431 §十一.3) reject with the exact
+// same rules and wording instead of maintaining two copies. `count`/
+// `totalBytes` describe whatever the file would be joining (existing ready
+// attachments, or already-staged files) — the caller decides what that set is.
+export function validateAttachmentCandidate(file, { count, totalBytes }) {
+  const mimeType = resolveMimeType(file)
+  if (!mimeType) {
+    return { ok: false, mimeType: null, error: '這個檔案類型暫不支援上傳，目前支援圖片（PNG/JPEG/WEBP）、PDF 與純文字/Markdown' }
+  }
+  if (file.size > MAX_FILE_BYTES) {
+    return { ok: false, mimeType, error: '這個檔案超過 10MB 上限，請壓縮或分次上傳' }
+  }
+  if (count >= MAX_FILES_PER_NOTE) {
+    return { ok: false, mimeType, error: '這則便利貼最多可附加 5 個檔案' }
+  }
+  if (totalBytes + file.size > MAX_TOTAL_BYTES_PER_NOTE) {
+    return { ok: false, mimeType, error: '附件總大小已達 25MB 上限' }
+  }
+  return { ok: true, mimeType, error: null }
+}
+
 export async function listAttachments(noteId) {
   const { data, error } = await supabase
     .from(TABLE)

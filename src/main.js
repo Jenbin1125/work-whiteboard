@@ -26,12 +26,12 @@ import { normalizeTag, displayTag, validateNewTag, getTagStats, invalidateTagSta
 import { iconUser, iconLink, iconPaperclip, iconTrash, iconCopy, iconChevronRight } from './icons.js'
 import {
   ALLOWED_MIME_TYPES,
-  MAX_FILE_BYTES,
   MAX_FILES_PER_NOTE,
   MAX_TOTAL_BYTES_PER_NOTE,
   IMAGE_MIME_TYPES,
   TEXT_MIME_TYPES,
   resolveMimeType,
+  validateAttachmentCandidate,
   listAttachments,
   uploadAttachment,
   retryUpload,
@@ -239,6 +239,57 @@ function renderNoteForm({ startOpen }) {
   // logic and post-submit behavior are both unchanged.
   const submitBtn = el('button', { type: 'submit', text: '送出' })
 
+  // id=431 §十一: files picked in Compose can't be uploaded yet (no note_id
+  // exists), so they're staged client-side only — no pending row, no Storage
+  // call — until submit creates the note and relay-uploads them. Never
+  // persisted to the draft (Files aren't JSON-serializable, and a lost
+  // selection on reload is the same limitation a plain <input type=file>
+  // already has everywhere else).
+  let stagedFiles = [] // { file, mimeType }[]
+  const stagedFilesRow = el('div', { class: 'staged-files-row' })
+  const stagedFilesError = el('p', { class: 'wba-error hidden' })
+  const attachFileInput = el('input', { type: 'file', class: 'hidden', accept: ALLOWED_MIME_TYPES.join(',') })
+
+  function renderStagedFiles() {
+    stagedFilesRow.replaceChildren(
+      ...stagedFiles.map(({ file }, i) =>
+        el('span', { class: 'tag-chip' }, [
+          el('span', { text: file.name }),
+          el('button', {
+            type: 'button',
+            'aria-label': '移除 ' + file.name,
+            text: '×',
+            onclick: () => {
+              stagedFiles.splice(i, 1)
+              renderStagedFiles()
+            },
+          }),
+        ])
+      )
+    )
+  }
+
+  const attachFileBtn = el(
+    'button',
+    { type: 'button', class: 'attach-file-btn', onclick: () => attachFileInput.click() },
+    [iconPaperclip(), el('span', { text: '附加檔案' })]
+  )
+  attachFileInput.addEventListener('change', () => {
+    const file = attachFileInput.files[0]
+    attachFileInput.value = ''
+    if (!file) return
+    stagedFilesError.classList.add('hidden')
+    const totalBytes = stagedFiles.reduce((sum, s) => sum + s.file.size, 0)
+    const check = validateAttachmentCandidate(file, { count: stagedFiles.length, totalBytes })
+    if (!check.ok) {
+      stagedFilesError.textContent = check.error
+      stagedFilesError.classList.remove('hidden')
+      return
+    }
+    stagedFiles.push({ file, mimeType: check.mimeType })
+    renderStagedFiles()
+  })
+
   const doSubmit = async () => {
     status.textContent = ''
     const content = contentInput.value
@@ -247,6 +298,7 @@ function renderNoteForm({ startOpen }) {
       return
     }
     const tags = tagEditor.getTags()
+    const filesToUpload = stagedFiles
 
     submitBtn.disabled = true
     try {
@@ -264,8 +316,16 @@ function renderNoteForm({ startOpen }) {
       toSelect.value = ''
       tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
+      stagedFiles = []
+      renderStagedFiles()
+      stagedFilesError.classList.add('hidden')
       clearDraft()
       invalidateTagStats()
+      // id=431 §十一.1: relay-upload now that a note id exists. A failed
+      // file must never roll back the note or block the other files —
+      // each keeps its own outcome, shown via the row's existing
+      // pending/uploading/ready/failed handling (id=431 §二).
+      expandedIds.add(newNote.id)
       if (listMountEl) refreshList(listMountEl)
       if (statusTabsRef) statusTabsRef.reload()
       showToast('已建立便利貼', {
@@ -273,6 +333,16 @@ function renderNoteForm({ startOpen }) {
         onAction: () => navigateToNote(newNote.id),
         duration: 4000,
       })
+      if (filesToUpload.length) {
+        Promise.allSettled(
+          filesToUpload.map(({ file, mimeType }) => uploadAttachment({ noteId: newNote.id, ownerUid: currentSession.user.id, file, mimeType }))
+        ).then(() => {
+          // This app has no realtime push — a second fetch is how "watch it
+          // finish" already works elsewhere (e.g. status-tab counts), so the
+          // row picks up each file's final ready/failed state once settled.
+          if (listMountEl) refreshList(listMountEl)
+        })
+      }
     } catch (err) {
       status.textContent = friendlyErrorMessage(err)
     } finally {
@@ -316,7 +386,11 @@ function renderNoteForm({ startOpen }) {
   form.appendChild(contentInput)
   form.appendChild(fromField)
   form.appendChild(toField)
-  form.appendChild(el('div', { class: 'compose-submit-row' }, [submitBtn]))
+  // id=435 §七: 附加檔案 (left) and 送出 (right) share one row.
+  form.appendChild(el('div', { class: 'compose-submit-row' }, [attachFileBtn, submitBtn]))
+  form.appendChild(stagedFilesRow)
+  form.appendChild(stagedFilesError)
+  form.appendChild(attachFileInput)
   form.appendChild(status)
   form.appendChild(moreDetails)
 
@@ -1250,31 +1324,16 @@ function buildAttachmentsSection(note) {
     // Local whitelist pre-check (id=431 §三) — reject before ever touching
     // Storage, with a clear inline message (no dialogs, matching the rest of
     // this app's interaction style).
-    const mimeType = resolveMimeType(file)
-    if (!mimeType) {
-      errorEl.textContent = '這個檔案類型暫不支援上傳，目前支援圖片（PNG/JPEG/WEBP）、PDF 與純文字/Markdown'
-      errorEl.classList.remove('hidden')
-      return
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      errorEl.textContent = '這個檔案超過 10MB 上限，請壓縮或分次上傳'
-      errorEl.classList.remove('hidden')
-      return
-    }
-    if (currentAttachments.length >= MAX_FILES_PER_NOTE) {
-      errorEl.textContent = '這則便利貼最多可附加 5 個檔案'
-      errorEl.classList.remove('hidden')
-      return
-    }
     const totalBytes = currentAttachments.reduce((sum, a) => sum + (a.size_bytes || 0), 0)
-    if (totalBytes + file.size > MAX_TOTAL_BYTES_PER_NOTE) {
-      errorEl.textContent = '附件總大小已達 25MB 上限'
+    const check = validateAttachmentCandidate(file, { count: currentAttachments.length, totalBytes })
+    if (!check.ok) {
+      errorEl.textContent = check.error
       errorEl.classList.remove('hidden')
       return
     }
 
     try {
-      await uploadAttachment({ noteId: note.id, ownerUid: currentSession.user.id, file, mimeType })
+      await uploadAttachment({ noteId: note.id, ownerUid: currentSession.user.id, file, mimeType: check.mimeType })
     } catch (err) {
       errorEl.textContent = friendlyErrorMessage(err)
       errorEl.classList.remove('hidden')
