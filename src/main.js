@@ -2015,24 +2015,34 @@ function buildFlowNode(note, { color, isCurrent, hint } = {}) {
 async function loadReplyContext(note, container) {
   container.replaceChildren(el('p', { class: 'flow-loading', text: '載入回覆脈絡…' }))
 
+  // GPT #120 code review (id=441 follow-up): a query failure here must
+  // never be mistaken for "genuinely no data" — that's exactly the
+  // "lost ball" failure mode this whole feature exists to prevent. Each
+  // fetch gets its own explicit failed-flag instead of silently
+  // defaulting to an empty result indistinguishable from a real empty
+  // state.
   let trail = []
   let upAnomaly = null
+  let trailLoadFailed = false
   try {
     ;({ trail, anomaly: upAnomaly } = await getReplyTrailUp(note))
   } catch {
-    upAnomaly = 'parent_unavailable'
+    trailLoadFailed = true
   }
 
   let directChildren = []
+  let directChildrenLoadFailed = false
   try {
     directChildren = await listReplies(note.id)
   } catch {
-    directChildren = []
+    directChildrenLoadFailed = true
   }
 
   // id=440 §2's isolated-note case still applies unchanged: no parent, no
-  // replies at all, nothing upstream we couldn't reach either.
-  if (!note.reply_to_note_id && trail.length === 0 && directChildren.length === 0 && !upAnomaly) {
+  // replies at all, nothing upstream we couldn't reach either — but only
+  // once we actually know that for certain. A failed fetch defaulting to
+  // an empty array must not be read as "confirmed empty".
+  if (!trailLoadFailed && !directChildrenLoadFailed && !note.reply_to_note_id && trail.length === 0 && directChildren.length === 0 && !upAnomaly) {
     container.replaceChildren(
       el('div', { class: 'reply-context' }, [
         el('p', { class: 'flow-empty-message', text: '此 note 尚未連入結構化回覆串' }),
@@ -2051,12 +2061,11 @@ async function loadReplyContext(note, container) {
   let nodesById = new Map()
   let childrenOf = new Map()
   let truncated = false
+  let treeScanFailed = false
   try {
     ;({ nodesById, childrenOf, truncated } = await scanReplyTree(rootId))
   } catch {
-    // Pending-leaf/coloring data is supplementary — the trail/current/
-    // children sections below already have their own independently-fetched
-    // data and still render regardless.
+    treeScanFailed = true
   }
 
   // Child relationships we already know for certain from the trail/direct-
@@ -2071,7 +2080,9 @@ async function loadReplyContext(note, container) {
 
   const sections = []
 
-  if (upAnomaly === 'parent_unavailable') {
+  if (trailLoadFailed) {
+    sections.push(el('p', { class: 'flow-exception', text: '無法載入上游回覆脈絡，請稍後再試' }))
+  } else if (upAnomaly === 'parent_unavailable') {
     sections.push(el('p', { class: 'flow-exception', text: '上游 note 已刪除或不可見' }))
   } else if (upAnomaly === 'cycle' || upAnomaly === 'depth_exceeded') {
     sections.push(el('p', { class: 'flow-exception', text: '偵測到回覆鏈異常' }))
@@ -2088,7 +2099,9 @@ async function loadReplyContext(note, container) {
 
   sections.push(buildFlowNode(note, { color: flowColor(note, childrenOf, knownHasChildren), isCurrent: true }))
 
-  if (directChildren.length) {
+  if (directChildrenLoadFailed) {
+    sections.push(el('p', { class: 'flow-exception', text: '無法載入後續回覆，請稍後再試' }))
+  } else if (directChildren.length) {
     const childrenEl = el('div', { class: 'flow-children' }, [
       el('p', { class: 'flow-children-heading', text: `此 note 有 ${directChildren.length} 則後續回覆` }),
     ])
@@ -2107,25 +2120,32 @@ async function loadReplyContext(note, container) {
     sections.push(el('p', { class: 'flow-exception', text: '回覆鏈過大，請開完整任務樹' }))
   }
 
-  const pendingLeaves = findPendingLeaves(nodesById, childrenOf)
-  if (pendingLeaves.length === 1) {
-    const label = recipientOrUnassigned(pendingLeaves[0])
-    sections.push(el('p', { class: 'flow-pending flow-pending-single', text: `🟡 目前球在 ${label}` }))
-  } else if (pendingLeaves.length > 1) {
-    sections.push(
-      el('div', { class: 'flow-pending flow-pending-multi' }, [
-        el('p', { class: 'flow-pending-heading', text: `🟡 目前有 ${pendingLeaves.length} 條分支待處理` }),
-        el(
-          'ul',
-          {},
-          pendingLeaves.map((n) =>
-            el('li', { text: `#${n.id}　${recipientOrUnassigned(n)}　${statusLabel(n.status)}` + (n.id === note.id ? '（本則）' : '') })
-          )
-        ),
-      ])
-    )
+  if (treeScanFailed) {
+    // Never fall through to "0 pending leaves" here — an empty nodesById
+    // from a failed scan is indistinguishable from a genuinely fully-
+    // resolved chain unless this is called out explicitly.
+    sections.push(el('p', { class: 'flow-exception', text: '無法完整載入回覆鏈，待處理摘要暫不可用' }))
   } else {
-    sections.push(el('p', { class: 'flow-pending flow-pending-done', text: '✅ 此任務鏈已無待處理項目' }))
+    const pendingLeaves = findPendingLeaves(nodesById, childrenOf)
+    if (pendingLeaves.length === 1) {
+      const label = recipientOrUnassigned(pendingLeaves[0])
+      sections.push(el('p', { class: 'flow-pending flow-pending-single', text: `🟡 目前球在 ${label}` }))
+    } else if (pendingLeaves.length > 1) {
+      sections.push(
+        el('div', { class: 'flow-pending flow-pending-multi' }, [
+          el('p', { class: 'flow-pending-heading', text: `🟡 目前有 ${pendingLeaves.length} 條分支待處理` }),
+          el(
+            'ul',
+            {},
+            pendingLeaves.map((n) =>
+              el('li', { text: `#${n.id}　${recipientOrUnassigned(n)}　${statusLabel(n.status)}` + (n.id === note.id ? '（本則）' : '') })
+            )
+          ),
+        ])
+      )
+    } else {
+      sections.push(el('p', { class: 'flow-pending flow-pending-done', text: '✅ 此任務鏈已無待處理項目' }))
+    }
   }
 
   container.replaceChildren(el('div', { class: 'reply-context' }, sections))
