@@ -122,15 +122,117 @@ export async function searchNotesForReply(query, { excludeId } = {}) {
 }
 
 // id=439 §四's forward-link query verbatim (deleted_at IS NULL filter).
+// Columns widened by id=441 (status/recipient/reply_to_note_id) so the same
+// function serves both id=440's simple one-level list and id=441's
+// tree-scan/badge rendering without a second near-duplicate query.
 export async function listReplies(noteId) {
   const { data, error } = await supabase
     .from(TABLE)
-    .select('id, title, content, created_at')
+    .select('id, title, content, status, recipient, reply_to_note_id, created_at')
     .eq('reply_to_note_id', noteId)
     .is('deleted_at', null)
     .order('created_at', { ascending: true })
   if (error) throw error
   return data
+}
+
+// id=441 §7.3: P0's reply-context sidebar reads reply_to_note_id via plain
+// iterative SELECTs — explicitly NOT a recursive CTE and NOT a new RPC (GPT
+// #116 confirmed no reply-tree RPC exists in public schema; id=439 §四's CTE
+// was only ever a reference example for direct SQL-tool use, never exposed
+// to the frontend). Every step here is a normal query already covered by
+// existing RLS, no bypass.
+const REPLY_TRAIL_DEPTH_CAP = 20 // §7.3 point 5 — upward trail depth only
+export const REPLY_TREE_NODE_CAP = 100 // §7.3 point 6 — total nodes scanned for the sidebar
+
+// Walks reply_to_note_id upward from `note` until reaching a root
+// (reply_to_note_id IS NULL), or an id=441 §二 exception: parent missing/
+// soft-deleted ("parent_unavailable"), a cycle ("cycle" — a note pointing
+// back at one already seen), or the depth cap ("depth_exceeded"). Returns
+// the trail root-first (excluding `note` itself) plus which exception (if
+// any) cut the climb short — the caller still renders whatever partial
+// trail was found, per §二's "同一句，不區分兩者" minimal-disclosure rule.
+export async function getReplyTrailUp(note) {
+  const trail = []
+  const visited = new Set([note.id])
+  let current = note
+  let anomaly = null
+  while (current.reply_to_note_id) {
+    if (trail.length >= REPLY_TRAIL_DEPTH_CAP) {
+      anomaly = 'depth_exceeded'
+      break
+    }
+    const parent = await getNoteById(current.reply_to_note_id)
+    if (!parent || parent.deleted_at) {
+      anomaly = 'parent_unavailable'
+      break
+    }
+    if (visited.has(parent.id)) {
+      anomaly = 'cycle'
+      break
+    }
+    visited.add(parent.id)
+    trail.unshift(parent)
+    current = parent
+  }
+  return { trail, anomaly }
+}
+
+// Breadth-first, level-by-level scan of every descendant reachable from
+// `rootId` — still just repeated listReplies() calls (iterative fetch, per
+// §7.3), never a recursive query. This is deliberately broader than what
+// the sidebar visually renders (§7.2 caps the *display* to direct children
+// only): §1.3's pending-leaf determination is unmodified by §七 and still
+// needs the whole tree to avoid understating "N 條分支待處理" to whatever
+// happens to be on-screen. Capped at REPLY_TREE_NODE_CAP total nodes;
+// `nodesById.has(...)` doubles as the cycle guard (a node already recorded
+// is never re-queued), so a cycle simply stops that branch rather than
+// looping — no separate depth counter needed for the downward direction.
+export async function scanReplyTree(rootId) {
+  const nodesById = new Map()
+  const childrenOf = new Map()
+  const root = await getNoteById(rootId)
+  if (!root || root.deleted_at) return { nodesById, childrenOf, truncated: false }
+  nodesById.set(root.id, root)
+
+  let frontier = [root.id]
+  let truncated = false
+  while (frontier.length && !truncated) {
+    const next = []
+    for (const id of frontier) {
+      const children = await listReplies(id)
+      const childIds = []
+      for (const child of children) {
+        if (nodesById.has(child.id)) continue // already seen — cycle guard
+        if (nodesById.size >= REPLY_TREE_NODE_CAP) {
+          truncated = true
+          break
+        }
+        nodesById.set(child.id, child)
+        childIds.push(child.id)
+        next.push(child.id)
+      }
+      childrenOf.set(id, childIds)
+      if (truncated) break
+    }
+    frontier = next
+  }
+  return { nodesById, childrenOf, truncated }
+}
+
+// id=441 §1.3's pending-leaf-node rule, computed over an already-scanned
+// tree (see scanReplyTree): unresolved status with no non-deleted direct
+// reply of its own. Pure function, no I/O — the scan already excludes
+// soft-deleted rows, so "no child in childrenOf" already means "no
+// non-deleted direct reply".
+export function findPendingLeaves(nodesById, childrenOf) {
+  const leaves = []
+  for (const note of nodesById.values()) {
+    const isUnresolved = note.status === 'raw' || note.status === 'triaged'
+    const hasChildren = (childrenOf.get(note.id) || []).length > 0
+    if (isUnresolved && !hasChildren) leaves.push(note)
+  }
+  return leaves
 }
 
 export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId }) {

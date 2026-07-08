@@ -596,21 +596,70 @@ body.body-scroll-locked { overflow: hidden; }
   color: #555;
 }
 
-/* id=440 §2: bidirectional reply links in the detail view body. */
-.reply-info:empty { display: none; }
-.reply-back-link { margin: 0.5rem 0; }
-.reply-forward-list { margin: 0.5rem 0; }
-.reply-forward-heading { font-size: 0.8rem; color: #666; margin: 0 0 0.3rem; font-weight: 600; }
-.reply-forward-list ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.2rem; }
-.reply-link-btn {
+/* id=441 P0: "回覆脈絡" sidebar — supersedes id=440 §2's plain link list
+   with a trail (up to root) + current note + direct children, plus the
+   §1.3 pending-leaf summary. Pure text/flex layout, no canvas — checklist
+   item 8 (mobile-friendly) falls out of that for free with flex-wrap. */
+.reply-context-heading { font-size: 0.85rem; color: #555; margin: 1rem 0 0.4rem; font-weight: 600; }
+.reply-context { display: flex; flex-direction: column; gap: 0.5rem; }
+.flow-loading { font-size: 0.82rem; color: #888; }
+.flow-empty-message { font-size: 0.85rem; color: #666; }
+.flow-empty-copy-btn {
   background: none;
-  border: none;
-  color: #0f766e;
-  text-align: left;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  color: #666;
   cursor: pointer;
-  padding: 0.15rem 0;
-  font-size: 0.85rem;
-  text-decoration: underline;
+}
+.flow-exception { font-size: 0.8rem; color: #b91c1c; border: 1px solid #fca5a5; border-radius: 6px; padding: 0.4rem 0.6rem; background: #fef2f2; }
+
+.flow-trail { display: flex; flex-direction: column; }
+.flow-connector { text-align: center; color: #aaa; font-size: 0.8rem; line-height: 1.4; }
+
+/* id=441 §1.2: each node's minimal fields — id/recipient/status on one
+   line, title-excerpt/time on the next. Deliberately no full content. */
+.flow-node {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  background: #fff;
+}
+.flow-node:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
+.flow-node-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; flex: 1; }
+.flow-node-line1 { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; font-size: 0.78rem; }
+.flow-node-id { color: #999; font-weight: 600; }
+.flow-node-recipient { color: #445; }
+.flow-node-status { color: #777; }
+.flow-node-line2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; font-size: 0.85rem; }
+.flow-node-title { font-weight: 600; }
+.flow-node-time { color: #999; font-size: 0.72rem; }
+.flow-node-hint { margin: 0.2rem 0 0; font-size: 0.72rem; color: #999; font-style: italic; }
+
+/* id=441 §三: exactly 4 semantic colors, never per-agent. Current note gets
+   its own highlight (a viewing cursor, not a task-state color) layered on
+   top of whichever of the 4 also applies. */
+.flow-node-gray { border-left: 3px solid #cbd5e1; }
+.flow-node-amber { border-left: 3px solid #d97706; background: #fffbeb; }
+.flow-node-green { border-left: 3px solid #0f766e; }
+.flow-node-current { cursor: default; outline: 2px solid #334155; outline-offset: 1px; }
+
+.flow-children { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.3rem; }
+.flow-children-heading { font-size: 0.8rem; color: #666; margin: 0; font-weight: 600; }
+
+.flow-pending { font-size: 0.85rem; }
+.flow-pending-single, .flow-pending-heading { font-weight: 600; }
+.flow-pending-multi ul { list-style: none; padding: 0; margin: 0.3rem 0 0; display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.8rem; color: #555; }
+.flow-pending-done { color: #0f766e; }
+
+@media (max-width: 640px) {
+  .flow-node { flex-wrap: wrap; }
 }
 
 /* id=440 §一: reply-target chip (Compose + detail edit form) — same look as

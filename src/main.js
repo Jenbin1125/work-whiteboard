@@ -18,6 +18,9 @@ import {
   getNoteById,
   searchNotesForReply,
   listReplies,
+  getReplyTrailUp,
+  scanReplyTree,
+  findPendingLeaves,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
@@ -1914,63 +1917,218 @@ function renderDetailTrashMessage(note) {
   )
 }
 
-// id=440 §2: fills in a detail note's backward ("回覆自") and forward
-// ("此則有 N 則回覆") links once their queries resolve. The two lookups are
-// independent — a failure in one (e.g. the parent lookup, if it somehow
-// errors) must never suppress the other, so each has its own try/catch
-// rather than one wrapping both.
-async function loadReplyInfo(note, container) {
-  const children = []
-  if (note.reply_to_note_id) {
-    try {
-      const parent = await getNoteById(note.reply_to_note_id)
-      // No special-casing for a hard-deleted parent: ON DELETE SET NULL
-      // (id=439 §三) already means reply_to_note_id itself becomes NULL in
-      // that case, so this branch is simply unreached — exactly id=440
-      // §2.1's "此區塊自然不顯示，無需額外處理殘留狀態".
-      if (parent) {
-        children.push(
-          el('p', { class: 'reply-back-link' }, [
-            el('button', {
-              type: 'button',
-              class: 'reply-link-btn',
-              text: `↩ 回覆自 note #${parent.id}｜${noteTitleOrExcerpt(parent)}`,
-              onclick: () => navigateToNote(parent.id),
-            }),
-          ])
-        )
+// id=441 §1.2/§三: title excerpt cap and 4-color semantic, shared by every
+// node the sidebar renders (ancestors, current note, direct children).
+// truncateForNode picks the midpoint of the spec's suggested 20–30 char
+// range, same "range given, CC picks the middle" precedent as
+// footballPreview.js's 90-char cap.
+function truncateForNode(text, max = 26) {
+  const t = text || ''
+  return t.length > max ? t.slice(0, max).trimEnd() + '…' : t
+}
+
+// Green wins regardless of leaf-ness (archived/extracted is done even if
+// nothing ever replied to it); amber is reserved for a genuinely still-open
+// leaf; everything else (has children, or unresolved-but-superseded by a
+// reply) is gray. `knownHasChildren` covers nodes whose child relationship
+// the caller already knows for certain from the trail/direct-children data
+// itself (independent of the capped tree-scan), so a node never gets
+// mis-colored amber just because the scan happened to stop before
+// recording its child — see loadReplyContext.
+function flowColor(note, childrenOf, knownHasChildren) {
+  if (note.status === 'archived' || note.status === 'extracted') return 'green'
+  const hasChildren = (childrenOf.get(note.id) || []).length > 0 || (knownHasChildren && knownHasChildren.has(note.id))
+  if (!hasChildren && (note.status === 'raw' || note.status === 'triaged')) return 'amber'
+  return 'gray'
+}
+
+// id=441 §7.1: applied uniformly to both the pending-leaf list AND the
+// single-leaf "目前球在 X" case — the spec's own wording only mentions the
+// list ("清單中"), but the same NULL-recipient gap can equally occur for a
+// single pending leaf, so this reuses the same fallback text there too.
+function recipientOrUnassigned(note) {
+  return note.recipient ? recipientLabel(note.recipient) : '此節點尚未指定收件人'
+}
+
+// id=441 §1.2/§1.4: one node renderer reused for ancestors, the current
+// note, and direct children. buildIconAction's own click handler already
+// calls stopPropagation before running onActivate, so the copy button never
+// also triggers the node's own navigate-on-click.
+function buildFlowNode(note, { color, isCurrent, hint } = {}) {
+  const copyBtn = buildIconAction({
+    icon: iconLink(),
+    label: '複製引用',
+    onActivate: async () => {
+      try {
+        await copyToClipboard(buildReferenceText(note))
+        return true
+      } catch {
+        return false
       }
-    } catch {
-      // supplementary info — never blocks the rest of the detail panel.
-    }
+    },
+  })
+  const bodyChildren = [
+    el('div', { class: 'flow-node-line1' }, [
+      el('span', { class: 'flow-node-id', text: '#' + note.id }),
+      el('span', { class: 'flow-node-recipient', text: recipientOrUnassigned(note) }),
+      el('span', { class: 'flow-node-status', text: statusLabel(note.status) }),
+    ]),
+    el('div', { class: 'flow-node-line2' }, [
+      el('span', { class: 'flow-node-title', text: truncateForNode(noteTitleOrExcerpt(note)) }),
+      el('span', { class: 'flow-node-time', text: new Date(note.created_at).toLocaleString() }),
+    ]),
+  ]
+  // §7.2's muted "deeper replies exist" note belongs inside the body so it
+  // stacks under line1/line2 — appending it as a sibling of body/copyBtn
+  // would make it a 3rd item in the node's flex row instead.
+  if (hint) bodyChildren.push(el('p', { class: 'flow-node-hint', text: hint }))
+  const body = el('div', { class: 'flow-node-body' }, bodyChildren)
+  const classes = ['flow-node', 'flow-node-' + (color || 'gray')]
+  if (isCurrent) classes.push('flow-node-current')
+  const nodeProps = { class: classes.join(' ') }
+  if (!isCurrent) {
+    nodeProps.role = 'button'
+    nodeProps.tabindex = '0'
   }
+  const node = el('div', nodeProps, [body, copyBtn])
+  if (!isCurrent) {
+    node.addEventListener('click', () => navigateToNote(note.id))
+    node.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        navigateToNote(note.id)
+      }
+    })
+  }
+  return node
+}
+
+// id=441 P0: "回覆脈絡" sidebar — parent trail up to root, the current
+// note, and direct children only (§7.2 supersedes the original §1.1's
+// "遞迴列出所有子孫": a direct child with its own further replies gets a
+// muted note instead of auto-expanding, since a full recursive tree is
+// P1 task-tree modal territory, not this sidebar's). Pending-leaf
+// detection (§1.3) is unmodified by §七 and still scans the whole tree —
+// via bounded iterative fetches (§7.3: no recursive CTE, no new RPC), not
+// just whatever happens to be on-screen — so "N 條分支待處理" never
+// understates branches outside the visible trail/children.
+async function loadReplyContext(note, container) {
+  container.replaceChildren(el('p', { class: 'flow-loading', text: '載入回覆脈絡…' }))
+
+  let trail = []
+  let upAnomaly = null
   try {
-    const replies = await listReplies(note.id)
-    if (replies.length) {
-      children.push(
-        el('div', { class: 'reply-forward-list' }, [
-          el('p', { class: 'reply-forward-heading', text: `此則有 ${replies.length} 則回覆` }),
-          el(
-            'ul',
-            {},
-            replies.map((r) =>
-              el('li', {}, [
-                el('button', {
-                  type: 'button',
-                  class: 'reply-link-btn',
-                  text: `${noteTitleOrExcerpt(r)}｜${new Date(r.created_at).toLocaleString()}`,
-                  onclick: () => navigateToNote(r.id),
-                }),
-              ])
-            )
-          ),
-        ])
-      )
-    }
+    ;({ trail, anomaly: upAnomaly } = await getReplyTrailUp(note))
   } catch {
-    // same reasoning — supplementary, never blocking.
+    upAnomaly = 'parent_unavailable'
   }
-  container.replaceChildren(...children)
+
+  let directChildren = []
+  try {
+    directChildren = await listReplies(note.id)
+  } catch {
+    directChildren = []
+  }
+
+  // id=440 §2's isolated-note case still applies unchanged: no parent, no
+  // replies at all, nothing upstream we couldn't reach either.
+  if (!note.reply_to_note_id && trail.length === 0 && directChildren.length === 0 && !upAnomaly) {
+    container.replaceChildren(
+      el('div', { class: 'reply-context' }, [
+        el('p', { class: 'flow-empty-message', text: '此 note 尚未連入結構化回覆串' }),
+        el('button', {
+          type: 'button',
+          class: 'flow-empty-copy-btn',
+          text: '複製引用以建立回覆',
+          onclick: () => performCopy(note),
+        }),
+      ])
+    )
+    return
+  }
+
+  const rootId = trail.length ? trail[0].id : note.id
+  let nodesById = new Map()
+  let childrenOf = new Map()
+  let truncated = false
+  try {
+    ;({ nodesById, childrenOf, truncated } = await scanReplyTree(rootId))
+  } catch {
+    // Pending-leaf/coloring data is supplementary — the trail/current/
+    // children sections below already have their own independently-fetched
+    // data and still render regardless.
+  }
+
+  // Child relationships we already know for certain from the trail/direct-
+  // children fetches themselves, independent of whether the capped tree-
+  // scan happened to reach them — passed into flowColor so an ancestor or
+  // the current note is never mis-colored amber just because the scan
+  // stopped short of recording its (already-known) child.
+  const knownHasChildren = new Set()
+  for (let i = 0; i < trail.length - 1; i++) knownHasChildren.add(trail[i].id)
+  if (trail.length) knownHasChildren.add(trail[trail.length - 1].id)
+  if (directChildren.length) knownHasChildren.add(note.id)
+
+  const sections = []
+
+  if (upAnomaly === 'parent_unavailable') {
+    sections.push(el('p', { class: 'flow-exception', text: '上游 note 已刪除或不可見' }))
+  } else if (upAnomaly === 'cycle' || upAnomaly === 'depth_exceeded') {
+    sections.push(el('p', { class: 'flow-exception', text: '偵測到回覆鏈異常' }))
+  }
+
+  if (trail.length) {
+    const trailEl = el('div', { class: 'flow-trail' })
+    trail.forEach((ancestor) => {
+      trailEl.appendChild(buildFlowNode(ancestor, { color: flowColor(ancestor, childrenOf, knownHasChildren) }))
+      trailEl.appendChild(el('div', { class: 'flow-connector', 'aria-hidden': 'true', text: '↓' }))
+    })
+    sections.push(trailEl)
+  }
+
+  sections.push(buildFlowNode(note, { color: flowColor(note, childrenOf, knownHasChildren), isCurrent: true }))
+
+  if (directChildren.length) {
+    const childrenEl = el('div', { class: 'flow-children' }, [
+      el('p', { class: 'flow-children-heading', text: `此 note 有 ${directChildren.length} 則後續回覆` }),
+    ])
+    directChildren.forEach((child) => {
+      const hasMore = (childrenOf.get(child.id) || []).length > 0
+      // §7.2: a direct child's own further replies stay collapsed here — a
+      // muted, non-interactive note instead of a dead link, since P1's
+      // task-tree modal (where this would actually go) doesn't exist yet.
+      const hint = hasMore ? '此分支還有更深層回覆（任務樹功能開發中）' : null
+      childrenEl.appendChild(buildFlowNode(child, { color: flowColor(child, childrenOf), hint }))
+    })
+    sections.push(childrenEl)
+  }
+
+  if (truncated) {
+    sections.push(el('p', { class: 'flow-exception', text: '回覆鏈過大，請開完整任務樹' }))
+  }
+
+  const pendingLeaves = findPendingLeaves(nodesById, childrenOf)
+  if (pendingLeaves.length === 1) {
+    const label = recipientOrUnassigned(pendingLeaves[0])
+    sections.push(el('p', { class: 'flow-pending flow-pending-single', text: `🟡 目前球在 ${label}` }))
+  } else if (pendingLeaves.length > 1) {
+    sections.push(
+      el('div', { class: 'flow-pending flow-pending-multi' }, [
+        el('p', { class: 'flow-pending-heading', text: `🟡 目前有 ${pendingLeaves.length} 條分支待處理` }),
+        el(
+          'ul',
+          {},
+          pendingLeaves.map((n) =>
+            el('li', { text: `#${n.id}　${recipientOrUnassigned(n)}　${statusLabel(n.status)}` + (n.id === note.id ? '（本則）' : '') })
+          )
+        ),
+      ])
+    )
+  } else {
+    sections.push(el('p', { class: 'flow-pending flow-pending-done', text: '✅ 此任務鏈已無待處理項目' }))
+  }
+
+  container.replaceChildren(el('div', { class: 'reply-context' }, sections))
 }
 
 function renderDetailNote(note, { foundInList } = {}) {
@@ -2070,17 +2228,20 @@ function renderDetailNote(note, { foundInList } = {}) {
         )
       : el('p', { class: 'tag-empty-hint', text: '尚未加入標籤。加入 1–3 個你未來可能用來搜尋這則 note 的主題詞。' })
 
-    // id=440 §2: bidirectional reply links, loaded async (two separate
-    // queries) — starts empty so there's no flash of "0 replies", and N=0
-    // for the forward list means the block just never appears (§2.2).
-    const replyInfoEl = el('div', { class: 'reply-info' })
-    loadReplyInfo(note, replyInfoEl)
+    // id=441 P0: "回覆脈絡" sidebar section — supersedes id=440 §2's minimal
+    // one-level backward/forward links (this extends that same query
+    // layer with the full parent trail + pending-leaf summary). Loaded
+    // async, mount starts with a loading message so there's no flash of
+    // empty content.
+    const replyContextMount = el('div', { class: 'reply-context-mount' })
+    loadReplyContext(note, replyContextMount)
 
     return el('div', {}, [
       notInFilterNotice,
       el('pre', { class: 'detail-content', text: note.content }),
       tagsEl,
-      replyInfoEl,
+      el('h3', { class: 'reply-context-heading', text: '回覆脈絡' }),
+      replyContextMount,
       el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
     ])
   }
