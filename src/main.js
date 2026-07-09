@@ -2330,7 +2330,17 @@ async function loadReplyContext(note, container) {
 // 另造第二套查詢邏輯或第二套「球」定義"). Two differences from the sidebar:
 // only two colors (gray / amber, no green-for-archived — §二), and no
 // copy-reference button or other interaction beyond click-to-open (§三/§四).
+// GPT #233: loadTacticalBoard is async across several awaits, so an older
+// in-flight call (from a route the user has since left, or a superseded
+// 重新查詢 click) could otherwise resolve after a newer one and overwrite
+// the screen with stale — possibly wrong-note — results. Directly
+// contradicts §〇 ("錯的球位比沒有更危險"). Every call bumps this counter
+// and captures its own value; closing the panel also bumps it. A render is
+// only allowed to reach the screen if its sequence number is still current.
+let tacticalLoadSeq = 0
+
 function closeTacticalPanel() {
+  tacticalLoadSeq += 1
   if (!tacticalPanelEl) return
   tacticalPanelEl.classList.add('hidden')
   tacticalPanelEl.replaceChildren()
@@ -2397,14 +2407,17 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
 // never mistaken for a live one, and so the §五.1 manual re-open-and-compare
 // acceptance test has a visible timestamp to check against.
 async function loadTacticalBoard(noteId) {
+  const seq = ++tacticalLoadSeq
+  const stale = () => seq !== tacticalLoadSeq
   renderTacticalLoading(noteId)
   let note
   try {
     note = await getNoteById(noteId)
   } catch (err) {
-    renderTacticalMessage(noteId, friendlyErrorMessage(err))
+    if (!stale()) renderTacticalMessage(noteId, friendlyErrorMessage(err))
     return
   }
+  if (stale()) return
   if (!note) {
     renderTacticalMessage(noteId, '找不到這則便利貼，或你沒有查看權限。')
     return
@@ -2418,17 +2431,19 @@ async function loadTacticalBoard(noteId) {
   try {
     ;({ trail } = await getReplyTrailUp(note))
   } catch {
-    renderTacticalMessage(noteId, '無法載入上游任務鏈，請稍後再試')
+    if (!stale()) renderTacticalMessage(noteId, '無法載入上游任務鏈，請稍後再試')
     return
   }
+  if (stale()) return
 
   let directChildren = []
   try {
     directChildren = await listReplies(note.id)
   } catch {
-    renderTacticalMessage(noteId, '無法載入分支，請稍後再試')
+    if (!stale()) renderTacticalMessage(noteId, '無法載入分支，請稍後再試')
     return
   }
+  if (stale()) return
 
   const rootId = trail.length ? trail[0].id : note.id
   let pendingLeaves = []
@@ -2438,9 +2453,10 @@ async function loadTacticalBoard(noteId) {
   } catch {
     // §〇's whole point: never guess at the ball position from partial
     // data. A visible "we don't know" beats a confident wrong answer.
-    renderTacticalMessage(noteId, '無法查詢球的位置，請稍後再試')
+    if (!stale()) renderTacticalMessage(noteId, '無法查詢球的位置，請稍後再試')
     return
   }
+  if (stale()) return
 
   const pendingIds = new Set(pendingLeaves.map((n) => n.id))
   const queriedAt = new Date()
