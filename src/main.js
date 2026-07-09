@@ -1719,32 +1719,54 @@ function renderAttachmentRow(att, noteId, onChanged) {
       // target is the enclosing button (44×44 via CSS padding) — the img
       // itself swaps in once the signed URL resolves, same lazy on-demand
       // fetch as before, just now also opening a lightbox reusing that same
-      // URL. thumbUrlPromise is shared between the initial load and the
-      // click handler (GPT #206): without this, clicking the thumbnail
-      // before its own getSignedUrl() resolves used to fire a second,
-      // independent request instead of awaiting the one already in flight.
+      // URL. ensureThumbUrlPromise() is shared between the initial load, the
+      // click handler, and the download button (GPT #206): concurrent
+      // callers await the same in-flight promise instead of each firing
+      // their own getSignedUrl(). GPT #213: a rejected promise resets itself
+      // to null so the *next* call retries instead of awaiting the same
+      // failed promise for the rest of this row's lifetime.
       let thumbUrl = null
-      let thumbUrlPromise = getSignedUrl(att.object_path)
+      let thumbUrlPromise = null
       const thumbInner = el('span', { class: 'wba-thumb-placeholder', text: '🖼️' })
+      // Node.replaceWith() is a no-op once thumbInner is already detached
+      // (MDN: does nothing if it has no parent), so calling this more than
+      // once — e.g. once from the initial mount-time load, again from a
+      // later successful click-retry — is safe. Without it, a retry after
+      // the first getSignedUrl() rejected would open the lightbox
+      // correctly but leave the thumbnail visually stuck on ⚠️.
+      function showThumbImage(url) {
+        const img = el('img', { class: 'wba-thumb', src: url, alt: att.original_name })
+        thumbInner.replaceWith(img)
+      }
+      function ensureThumbUrlPromise() {
+        if (thumbUrl) return Promise.resolve(thumbUrl)
+        if (!thumbUrlPromise) {
+          thumbUrlPromise = getSignedUrl(att.object_path)
+            .then((url) => {
+              thumbUrl = url
+              showThumbImage(url)
+              return url
+            })
+            .catch((err) => {
+              thumbUrlPromise = null
+              throw err
+            })
+        }
+        return thumbUrlPromise
+      }
       const thumbBtn = el('button', { class: 'wba-thumb-btn', type: 'button', 'aria-label': '放大檢視 ' + att.original_name }, [thumbInner])
       thumbBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
         try {
-          const url = thumbUrl || (await thumbUrlPromise)
+          const url = await ensureThumbUrlPromise()
           openImageLightbox({ url, filename: att.original_name, triggerEl: thumbBtn })
         } catch (err) {
           showToast(friendlyErrorMessage(err))
         }
       })
-      thumbUrlPromise
-        .then((url) => {
-          thumbUrl = url
-          const img = el('img', { class: 'wba-thumb', src: url, alt: att.original_name })
-          thumbInner.replaceWith(img)
-        })
-        .catch(() => {
-          thumbInner.textContent = '⚠️'
-        })
+      ensureThumbUrlPromise().catch(() => {
+        thumbInner.textContent = '⚠️'
+      })
       icon = thumbBtn
       actions.push(
         el('button', {
@@ -1755,7 +1777,7 @@ function renderAttachmentRow(att, noteId, onChanged) {
           onclick: async (e) => {
             e.stopPropagation()
             try {
-              const url = thumbUrl || (await thumbUrlPromise)
+              const url = await ensureThumbUrlPromise()
               triggerDownload(url, att.original_name)
             } catch (err) {
               showToast(friendlyErrorMessage(err))
