@@ -1438,8 +1438,14 @@ function buildTwoStepButton({ label, confirmLabel, className, onConfirm }) {
 
 // --- attachments (id=430/431): lives only inside the row's expanded state,
 // never the collapsed row or the Compose Area — a note must exist first. ---
-function buildAttachmentsSection(note) {
-  const container = el('div', { class: 'wb-attachments-section' })
+// id=431§十二: hideWhenEmpty lets a call site (the detail panel) collapse
+// the whole section away when a note has zero attachments, instead of
+// always showing the header/add-button chrome — the row-expand call site
+// omits this option and keeps its existing always-show behavior unchanged.
+function buildAttachmentsSection(note, { hideWhenEmpty = false } = {}) {
+  // Starts hidden in hideWhenEmpty mode so there's no flash of "載入中…"
+  // chrome before the first load resolves and decides whether to show it.
+  const container = el('div', { class: hideWhenEmpty ? 'wb-attachments-section hidden' : 'wb-attachments-section' })
   const listEl = el('ul', { class: 'wb-attachment-list' })
   const counterEl = el('span', { class: 'wba-counter' })
   const errorEl = el('p', { class: 'wba-error hidden' })
@@ -1458,6 +1464,7 @@ function buildAttachmentsSection(note) {
 
   function renderAttachmentList() {
     updateCounter()
+    if (hideWhenEmpty) container.classList.toggle('hidden', currentAttachments.length === 0)
     if (!currentAttachments.length) {
       listEl.replaceChildren(el('li', { class: 'wba-empty', text: '尚無附件' }))
       return
@@ -1471,6 +1478,9 @@ function buildAttachmentsSection(note) {
       currentAttachments = await listAttachments(note.id)
       renderAttachmentList()
     } catch (err) {
+      // A fetch failure must stay visible even in hideWhenEmpty mode —
+      // hiding it here would look like "confirmed zero attachments" when
+      // it's actually "we don't know yet".
       listEl.replaceChildren(el('li', { class: 'error', text: friendlyErrorMessage(err) }))
     }
   }
@@ -2267,6 +2277,16 @@ function renderDetailNote(note, { foundInList } = {}) {
 
     const notInFilterNotice = foundInList === false ? el('p', { class: 'detail-message', text: '此 note 不在目前篩選結果。' }) : el('div')
 
+    // id=431§十二: reuse the existing row-expand attachments component,
+    // just mounted into the detail panel instead. renderDetailNote is only
+    // ever called for a non-trashed note (syncDetailFromHash routes
+    // deleted_at notes to renderDetailTrashMessage before reaching here),
+    // so no isTrashed guard is needed the way the row-expand call site has.
+    // Loaded eagerly (not on a lazy expand toggle) — the detail panel has
+    // no collapsed state, opening it already is the "expanded" action.
+    const attachments = buildAttachmentsSection(note, { hideWhenEmpty: true })
+    attachments.load()
+
     const tagsEl = tags.length
       ? el(
           'div',
@@ -2286,6 +2306,7 @@ function renderDetailNote(note, { foundInList } = {}) {
     return el('div', {}, [
       notInFilterNotice,
       el('pre', { class: 'detail-content', text: note.content }),
+      attachments.element,
       tagsEl,
       el('h3', { class: 'reply-context-heading', text: '回覆脈絡' }),
       replyContextMount,
