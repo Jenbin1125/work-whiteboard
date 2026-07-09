@@ -288,6 +288,88 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 }
 .wba-phi-note { font-size: 0.7rem; color: #888; margin: 0; }
 
+/* id=431§十三: image attachments — thumbnail stays visually 28×28 (matches
+   .wba-thumb above) but its click target is padded out to the 44×44 touch
+   standard (GPT #78); the download button next to it gets the same
+   treatment without growing the row's overall height. */
+.wba-thumb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -8px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wba-thumb-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; border-radius: 4px; }
+.wba-img-download-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -8px 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+.wba-img-download-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; border-radius: 4px; }
+
+body.lightbox-scroll-locked { overflow: hidden; }
+.wba-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 1.5rem;
+}
+.wba-lightbox {
+  position: relative;
+  background: #fff;
+  border-radius: 8px;
+  padding: 2.5rem 1rem 1rem;
+  max-width: min(90vw, 900px);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+.wba-lightbox-img { max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px; }
+.wba-lightbox-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: #444;
+}
+.wba-lightbox-actions { display: flex; justify-content: center; }
+.wba-lightbox-download-btn {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  padding: 0.4rem 0.8rem;
+  min-height: 44px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: #333;
+}
+
 /* id=435 §二: replaced the old "⋯" popover menu — three always-visible
    icon buttons per row instead of a menu needing two clicks. */
 .row-actions { display: flex; align-items: center; gap: 0.1rem; flex-shrink: 0; }

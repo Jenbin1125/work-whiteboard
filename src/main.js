@@ -1538,6 +1538,70 @@ function triggerDownload(url, filename) {
   a.remove()
 }
 
+// id=431§十三: image lightbox. Unlike the detail panel (which deliberately
+// avoids role="dialog"/aria-modal because it has no real focus trap — see
+// the P0-8 comment on renderDetailShell), this genuinely earns modal
+// semantics: its content is exactly two focusable elements (close, download),
+// small and fixed enough to trap Tab between honestly, so it's not the
+// "claims modal, doesn't behave like one" anti-pattern that comment warns
+// about. Own scroll-lock class, independent of the detail panel's, so
+// opening a lightbox from inside an already-open detail panel and closing
+// it again doesn't prematurely unlock the panel's own scroll lock.
+function openImageLightbox({ url, filename, triggerEl }) {
+  const closeBtn = el('button', { class: 'wba-lightbox-close', type: 'button', 'aria-label': '關閉放大檢視', text: '✕' })
+  const downloadBtn = el('button', { class: 'wba-lightbox-download-btn', type: 'button' }, [el('span', { text: '⬇️ 下載' })])
+  downloadBtn.addEventListener('click', () => triggerDownload(url, filename))
+
+  const img = el('img', { class: 'wba-lightbox-img', src: url, alt: filename })
+  const dialog = el('div', { class: 'wba-lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': filename }, [
+    closeBtn,
+    img,
+    el('div', { class: 'wba-lightbox-actions' }, [downloadBtn]),
+  ])
+  const backdrop = el('div', { class: 'wba-lightbox-backdrop' }, [dialog])
+
+  document.body.classList.add('lightbox-scroll-locked')
+
+  function close() {
+    document.removeEventListener('keydown', onKeydown, true)
+    backdrop.remove()
+    document.body.classList.remove('lightbox-scroll-locked')
+    if (triggerEl && typeof triggerEl.focus === 'function') triggerEl.focus()
+  }
+
+  const focusable = [closeBtn, downloadBtn]
+  // Capture phase + stopPropagation: the page also has its own bubble-phase
+  // Escape listener (closes the whole detail panel). Without this, that
+  // listener — registered long before this dialog ever opens — fires first
+  // and closes the panel out from under the lightbox before this handler
+  // gets a chance to run its own close()/focus-return.
+  function onKeydown(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      close()
+      return
+    }
+    if (e.key !== 'Tab') return
+    // Minimal trap over the only two focusable elements this dialog has.
+    e.preventDefault()
+    e.stopPropagation()
+    const goingBack = e.shiftKey
+    const current = focusable.indexOf(document.activeElement)
+    const next = goingBack ? (current <= 0 ? focusable.length - 1 : current - 1) : (current + 1) % focusable.length
+    focusable[next].focus()
+  }
+
+  closeBtn.addEventListener('click', close)
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) close()
+  })
+  document.addEventListener('keydown', onKeydown, true)
+
+  document.body.appendChild(backdrop)
+  closeBtn.focus()
+}
+
 function buildRetryButton(att, onChanged) {
   const input = el('input', { type: 'file', class: 'hidden', accept: ALLOWED_MIME_TYPES.join(',') })
   input.addEventListener('click', (e) => e.stopPropagation())
@@ -1651,15 +1715,50 @@ function renderAttachmentRow(att, noteId, onChanged) {
 
   if (att.upload_status === 'ready') {
     if (IMAGE_MIME_TYPES.includes(att.mime_type)) {
-      icon = el('span', { class: 'wba-thumb-placeholder', text: '🖼️' })
+      // id=431§十三: thumbnail stays 28×28 visually, but its click target is
+      // the enclosing button (44×44 via CSS padding) — the img itself swaps
+      // in once the signed URL resolves, same lazy on-demand fetch as
+      // before, just now also opening a lightbox reusing that same URL
+      // (no redundant second fetch per §13.2).
+      let thumbUrl = null
+      const thumbInner = el('span', { class: 'wba-thumb-placeholder', text: '🖼️' })
+      const thumbBtn = el('button', { class: 'wba-thumb-btn', type: 'button', 'aria-label': '放大檢視 ' + att.original_name }, [thumbInner])
+      thumbBtn.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        try {
+          if (!thumbUrl) thumbUrl = await getSignedUrl(att.object_path)
+          openImageLightbox({ url: thumbUrl, filename: att.original_name, triggerEl: thumbBtn })
+        } catch (err) {
+          showToast(friendlyErrorMessage(err))
+        }
+      })
       getSignedUrl(att.object_path)
         .then((url) => {
+          thumbUrl = url
           const img = el('img', { class: 'wba-thumb', src: url, alt: att.original_name })
-          icon.replaceWith(img)
+          thumbInner.replaceWith(img)
         })
         .catch(() => {
-          icon.textContent = '⚠️'
+          thumbInner.textContent = '⚠️'
         })
+      icon = thumbBtn
+      actions.push(
+        el('button', {
+          class: 'wba-img-download-btn',
+          type: 'button',
+          'aria-label': '下載 ' + att.original_name,
+          text: '⬇️',
+          onclick: async (e) => {
+            e.stopPropagation()
+            try {
+              const url = thumbUrl || (await getSignedUrl(att.object_path))
+              triggerDownload(url, att.original_name)
+            } catch (err) {
+              showToast(friendlyErrorMessage(err))
+            }
+          },
+        })
+      )
     } else if (att.mime_type === 'application/pdf') {
       icon = el('span', { 'aria-hidden': 'true', text: '📄' })
       actions.push(
