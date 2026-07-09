@@ -1480,7 +1480,10 @@ function buildAttachmentsSection(note, { hideWhenEmpty = false } = {}) {
     } catch (err) {
       // A fetch failure must stay visible even in hideWhenEmpty mode —
       // hiding it here would look like "confirmed zero attachments" when
-      // it's actually "we don't know yet".
+      // it's actually "we don't know yet". renderAttachmentList() is the
+      // only place that clears this 'hidden' class on the success path, so
+      // the catch branch has to do it too, not just repaint listEl (幕僚長 #191).
+      if (hideWhenEmpty) container.classList.remove('hidden')
       listEl.replaceChildren(el('li', { class: 'error', text: friendlyErrorMessage(err) }))
     }
   }
