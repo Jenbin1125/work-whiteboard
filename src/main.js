@@ -1549,7 +1549,7 @@ function triggerDownload(url, filename) {
 // it again doesn't prematurely unlock the panel's own scroll lock.
 function openImageLightbox({ url, filename, triggerEl }) {
   const closeBtn = el('button', { class: 'wba-lightbox-close', type: 'button', 'aria-label': '關閉放大檢視', text: '✕' })
-  const downloadBtn = el('button', { class: 'wba-lightbox-download-btn', type: 'button' }, [el('span', { text: '⬇️ 下載' })])
+  const downloadBtn = el('button', { class: 'wba-lightbox-download-btn', type: 'button', 'aria-label': '下載 ' + filename }, [el('span', { text: '⬇️ 下載' })])
   downloadBtn.addEventListener('click', () => triggerDownload(url, filename))
 
   const img = el('img', { class: 'wba-lightbox-img', src: url, alt: filename })
@@ -1715,24 +1715,28 @@ function renderAttachmentRow(att, noteId, onChanged) {
 
   if (att.upload_status === 'ready') {
     if (IMAGE_MIME_TYPES.includes(att.mime_type)) {
-      // id=431§十三: thumbnail stays 28×28 visually, but its click target is
-      // the enclosing button (44×44 via CSS padding) — the img itself swaps
-      // in once the signed URL resolves, same lazy on-demand fetch as
-      // before, just now also opening a lightbox reusing that same URL
-      // (no redundant second fetch per §13.2).
+      // id=431§十三/§十四: thumbnail stays 28×28 visually, but its click
+      // target is the enclosing button (44×44 via CSS padding) — the img
+      // itself swaps in once the signed URL resolves, same lazy on-demand
+      // fetch as before, just now also opening a lightbox reusing that same
+      // URL. thumbUrlPromise is shared between the initial load and the
+      // click handler (GPT #206): without this, clicking the thumbnail
+      // before its own getSignedUrl() resolves used to fire a second,
+      // independent request instead of awaiting the one already in flight.
       let thumbUrl = null
+      let thumbUrlPromise = getSignedUrl(att.object_path)
       const thumbInner = el('span', { class: 'wba-thumb-placeholder', text: '🖼️' })
       const thumbBtn = el('button', { class: 'wba-thumb-btn', type: 'button', 'aria-label': '放大檢視 ' + att.original_name }, [thumbInner])
       thumbBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
         try {
-          if (!thumbUrl) thumbUrl = await getSignedUrl(att.object_path)
-          openImageLightbox({ url: thumbUrl, filename: att.original_name, triggerEl: thumbBtn })
+          const url = thumbUrl || (await thumbUrlPromise)
+          openImageLightbox({ url, filename: att.original_name, triggerEl: thumbBtn })
         } catch (err) {
           showToast(friendlyErrorMessage(err))
         }
       })
-      getSignedUrl(att.object_path)
+      thumbUrlPromise
         .then((url) => {
           thumbUrl = url
           const img = el('img', { class: 'wba-thumb', src: url, alt: att.original_name })
@@ -1751,7 +1755,7 @@ function renderAttachmentRow(att, noteId, onChanged) {
           onclick: async (e) => {
             e.stopPropagation()
             try {
-              const url = thumbUrl || (await getSignedUrl(att.object_path))
+              const url = thumbUrl || (await thumbUrlPromise)
               triggerDownload(url, att.original_name)
             } catch (err) {
               showToast(friendlyErrorMessage(err))
