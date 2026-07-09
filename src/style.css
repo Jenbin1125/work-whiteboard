@@ -785,11 +785,36 @@ body.body-scroll-locked { overflow: hidden; }
 .tactical-close { background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #666; padding: 0.3rem 0.5rem; }
 
 .tactical-ball-summary { font-size: 0.9rem; }
-.tactical-ball-summary ul { list-style: none; padding: 0; margin: 0.3rem 0 0; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.82rem; color: #555; }
 
-.tactical-layout { display: flex; align-items: stretch; gap: 0.75rem; flex-wrap: wrap; }
+/* id=450§九.1: pending-leaf chips — click-to-open, same as any board node. */
+.tactical-ball-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
+.tactical-ball-chip {
+  background: #fffbeb;
+  border: 1px solid #d97706;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  color: #92400e;
+  cursor: pointer;
+}
+.tactical-ball-chip:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
+
+/* §九.5: legend distinguishing the two independent visual signals a node
+   can carry at once (viewing a pending-leaf note shows both). */
+.tactical-legend { display: flex; gap: 1rem; font-size: 0.75rem; color: #888; }
+
+/* §九.4: faint column labels — 上游/目前/後續. Columns with nothing in them
+   are omitted by the caller rather than rendered empty. */
+.tactical-layout { display: flex; align-items: flex-start; gap: 1.5rem; flex-wrap: wrap; }
+.tactical-col { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.tactical-col-label { margin: 0; font-size: 0.72rem; color: #aaa; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* §九.3: arrow is grouped with the node it leads into (tactical-flow-step),
+   so a flex-wrap line break can only fall between groups — never between an
+   arrow and its target — and a wrapped trail never shows a dangling arrow. */
 .tactical-trail { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-.tactical-arrow { color: #aaa; font-size: 1rem; }
+.tactical-flow-step { display: flex; align-items: center; gap: 0.5rem; }
+.tactical-arrow { color: #aaa; font-size: 1rem; flex-shrink: 0; }
 .tactical-branches { display: flex; flex-direction: column; gap: 0.5rem; min-width: 220px; }
 
 .tactical-node {
@@ -805,6 +830,7 @@ body.body-scroll-locked { overflow: hidden; }
 }
 .tactical-node:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
 .tactical-node-line1 { display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: #888; }
+.tactical-node-recipient { font-size: 0.8rem; color: #445; }
 .tactical-node-title { font-weight: 600; font-size: 0.88rem; }
 .tactical-gray { border-left: 4px solid #cbd5e1; }
 .tactical-amber { border-left: 4px solid #d97706; background: #fffbeb; }
@@ -813,6 +839,7 @@ body.body-scroll-locked { overflow: hidden; }
 @media (max-width: 720px) {
   .tactical-layout { flex-direction: column; }
   .tactical-trail { flex-direction: column; align-items: stretch; }
+  .tactical-flow-step { flex-direction: column; align-items: stretch; }
   .tactical-arrow { transform: rotate(90deg); align-self: center; }
 }
 

@@ -2372,7 +2372,9 @@ function renderTacticalMessage(noteId, text) {
   ])
 }
 
-// §三/§四: click-to-open only — no copy-reference button, no other action.
+// id=450§九.5: "目前查看" (isCurrent, dark outline) and "待處理球" (isBall,
+// amber left border) are visually distinct and can independently apply to
+// the same node — see the legend rendered alongside the ball summary.
 function tacticalNode(note, { isCurrent, isBall } = {}) {
   const classes = ['tactical-node', isBall ? 'tactical-amber' : 'tactical-gray']
   if (isCurrent) classes.push('tactical-current')
@@ -2386,6 +2388,9 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
       el('span', { class: 'tactical-node-id', text: '#' + note.id }),
       el('span', { class: 'tactical-node-status', text: statusLabel(note.status) }),
     ]),
+    // §九.2: explicit "收：X" line so who's holding the ball doesn't require
+    // cross-referencing the text summary above.
+    el('div', { class: 'tactical-node-recipient', text: note.recipient ? '收：' + recipientLabel(note.recipient) : '尚未指定收件人' }),
     el('div', { class: 'tactical-node-title', text: truncateForNode(noteTitleOrExcerpt(note)) }),
   ])
   if (!isCurrent) {
@@ -2398,6 +2403,19 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
     })
   }
   return node
+}
+
+// §九.1: pending-leaf chips, shared by both the single-ball and multi-branch
+// summary cases — each is click-to-open, same mechanism as a board node
+// (§三's only interaction type, not a new one).
+function tacticalBallChips(pendingLeaves) {
+  const row = el('div', { class: 'tactical-ball-chips' })
+  pendingLeaves.forEach((n) => {
+    const chip = el('button', { type: 'button', class: 'tactical-ball-chip', text: `#${n.id} ${recipientOrUnassigned(n)}` })
+    chip.addEventListener('click', () => navigateToNote(n.id))
+    row.appendChild(chip)
+  })
+  return row
 }
 
 // §〇.1-2: every call re-runs the live pending-leaf query from scratch —
@@ -2461,30 +2479,58 @@ async function loadTacticalBoard(noteId) {
   const pendingIds = new Set(pendingLeaves.map((n) => n.id))
   const queriedAt = new Date()
 
+  // §九.3: each arrow is grouped with the node it leads INTO (not appended
+  // after the node it follows) inside one non-wrap-splitting unit — a
+  // flex-wrap line break can only ever fall between groups, never between
+  // an arrow and its target, so a wrapped trail never shows a dangling
+  // arrow with nothing visually after it.
   const trailRow = el('div', { class: 'tactical-trail' })
   trail.forEach((ancestor) => {
-    trailRow.appendChild(tacticalNode(ancestor, { isBall: pendingIds.has(ancestor.id) }))
-    trailRow.appendChild(el('div', { class: 'tactical-arrow', 'aria-hidden': 'true', text: '→' }))
+    const step = el('div', { class: 'tactical-flow-step' })
+    if (trailRow.children.length > 0) step.appendChild(el('div', { class: 'tactical-arrow', 'aria-hidden': 'true', text: '→' }))
+    step.appendChild(tacticalNode(ancestor, { isBall: pendingIds.has(ancestor.id) }))
+    trailRow.appendChild(step)
   })
+  const currentStep = el('div', { class: 'tactical-flow-step' })
+  if (trail.length) currentStep.appendChild(el('div', { class: 'tactical-arrow', 'aria-hidden': 'true', text: '→' }))
+  currentStep.appendChild(tacticalNode(note, { isCurrent: true, isBall: pendingIds.has(note.id) }))
 
   const branchesCol = el('div', { class: 'tactical-branches' })
   directChildren.forEach((child) => branchesCol.appendChild(tacticalNode(child, { isBall: pendingIds.has(child.id) })))
 
+  // §九.4: faint column labels give the horizontal layout its "tactics
+  // board" spatial meaning instead of reading as a plain card row. A column
+  // with nothing in it (no upstream, or no branches yet) is omitted
+  // entirely rather than showing an empty labeled section.
+  const columns = []
+  if (trail.length) columns.push(el('div', { class: 'tactical-col' }, [el('p', { class: 'tactical-col-label', text: '上游' }), trailRow]))
+  columns.push(el('div', { class: 'tactical-col' }, [el('p', { class: 'tactical-col-label', text: '目前' }), currentStep]))
+  if (directChildren.length) columns.push(el('div', { class: 'tactical-col' }, [el('p', { class: 'tactical-col-label', text: '後續' }), branchesCol]))
+
   let ballSummary
   if (pendingLeaves.length === 1) {
-    ballSummary = el('p', { class: 'tactical-ball-summary', text: `🟡 目前球在 ${recipientOrUnassigned(pendingLeaves[0])}` })
+    ballSummary = el('div', { class: 'tactical-ball-summary' }, [
+      el('p', { text: `🟡 目前球在 ${recipientOrUnassigned(pendingLeaves[0])}` }),
+      tacticalBallChips(pendingLeaves),
+    ])
   } else if (pendingLeaves.length > 1) {
     ballSummary = el('div', { class: 'tactical-ball-summary' }, [
       el('p', { text: `🟡 目前有 ${pendingLeaves.length} 條分支待處理` }),
-      el(
-        'ul',
-        {},
-        pendingLeaves.map((n) => el('li', { text: `#${n.id}　${recipientOrUnassigned(n)}` }))
-      ),
+      tacticalBallChips(pendingLeaves),
     ])
   } else {
     ballSummary = el('p', { class: 'tactical-ball-summary', text: '✅ 此任務鏈已無待處理項目' })
   }
+
+  // §九.5: legend — only shown when there's actually a distinction to make
+  // (an empty/all-done chain has no amber nodes to explain).
+  const legend =
+    pendingLeaves.length > 0
+      ? el('p', { class: 'tactical-legend' }, [
+          el('span', { class: 'tactical-legend-current', text: '▣ 目前查看' }),
+          el('span', { class: 'tactical-legend-ball', text: '🟡 待處理球' }),
+        ])
+      : null
 
   renderTacticalShell([
     el('div', { class: 'tactical-header' }, [
@@ -2494,7 +2540,8 @@ async function loadTacticalBoard(noteId) {
       el('button', { class: 'tactical-close', type: 'button', 'aria-label': '關閉任務戰術盤', text: '✕', onclick: () => navigateToNote(noteId) }),
     ]),
     ballSummary,
-    el('div', { class: 'tactical-layout' }, [trailRow, tacticalNode(note, { isCurrent: true, isBall: pendingIds.has(note.id) }), branchesCol]),
+    ...(legend ? [legend] : []),
+    el('div', { class: 'tactical-layout' }, columns),
   ])
 }
 
