@@ -23,7 +23,7 @@ import {
   findPendingLeaves,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
-import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange } from './router.js'
+import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange, getTacticalNoteIdFromHash, navigateToTactical } from './router.js'
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
 import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS, noteTitleOrExcerpt } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
@@ -78,6 +78,7 @@ let currentSession = null
 let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: undefined }
 let activeNoteId = null
 let detailPanelEl = null
+let tacticalPanelEl = null
 let listMountEl = null
 let openMenuCloser = null
 let copyInFlight = false
@@ -110,11 +111,13 @@ let lastFocusedBeforeDetail = null
 function render() {
   app.replaceChildren()
   detailPanelEl = null
+  tacticalPanelEl = null
   listMountEl = null
   composeFormRef = null
   if (currentSession) {
     app.appendChild(renderBoard())
     syncDetailFromHash()
+    syncTacticalFromHash()
   } else {
     app.appendChild(renderLogin())
   }
@@ -198,6 +201,11 @@ function renderBoard() {
 
   detailPanelEl = el('aside', { class: 'detail-panel hidden', 'aria-label': '便利貼詳情' })
   container.appendChild(detailPanelEl)
+
+  // id=450 P0: full-screen, not the 560px detail side panel — the tactical
+  // board's horizontal upstream/current/branches layout needs real width.
+  tacticalPanelEl = el('div', { class: 'tactical-panel hidden', 'aria-label': '任務戰術盤' })
+  container.appendChild(tacticalPanelEl)
 
   refreshList(listMount).then((notes) => {
     // Mobile: an empty board still opens the compose form so first-time use
@@ -2316,6 +2324,183 @@ async function loadReplyContext(note, container) {
   container.replaceChildren(el('div', { class: 'reply-context' }, sections))
 }
 
+// id=450 P0: 任務戰術盤 — a full-screen, wider-format sibling to the 回覆脈絡
+// sidebar above, reusing exactly the same data-fetching functions
+// (getReplyTrailUp/listReplies/scanReplyTree/findPendingLeaves — §五.2: "不得
+// 另造第二套查詢邏輯或第二套「球」定義"). Two differences from the sidebar:
+// only two colors (gray / amber, no green-for-archived — §二), and no
+// copy-reference button or other interaction beyond click-to-open (§三/§四).
+function closeTacticalPanel() {
+  if (!tacticalPanelEl) return
+  tacticalPanelEl.classList.add('hidden')
+  tacticalPanelEl.replaceChildren()
+}
+
+function renderTacticalShell(children) {
+  if (!tacticalPanelEl) return
+  tacticalPanelEl.classList.remove('hidden')
+  tacticalPanelEl.replaceChildren(el('div', { class: 'tactical-board' }, children))
+}
+
+function renderTacticalLoading(noteId) {
+  renderTacticalShell([
+    el('div', { class: 'tactical-header' }, [
+      el('h2', { text: '任務戰術盤' }),
+      el('button', { class: 'tactical-close', type: 'button', 'aria-label': '關閉任務戰術盤', text: '✕', onclick: () => navigateToNote(noteId) }),
+    ]),
+    el('p', { text: '載入中…' }),
+  ])
+}
+
+function renderTacticalMessage(noteId, text) {
+  renderTacticalShell([
+    el('div', { class: 'tactical-header' }, [
+      el('h2', { text: '任務戰術盤' }),
+      el('button', { class: 'tactical-close', type: 'button', 'aria-label': '關閉任務戰術盤', text: '✕', onclick: () => navigateToNote(noteId) }),
+    ]),
+    el('p', { class: 'flow-exception', text }),
+  ])
+}
+
+// §三/§四: click-to-open only — no copy-reference button, no other action.
+function tacticalNode(note, { isCurrent, isBall } = {}) {
+  const classes = ['tactical-node', isBall ? 'tactical-amber' : 'tactical-gray']
+  if (isCurrent) classes.push('tactical-current')
+  const props = { class: classes.join(' ') }
+  if (!isCurrent) {
+    props.role = 'button'
+    props.tabindex = '0'
+  }
+  const node = el('div', props, [
+    el('div', { class: 'tactical-node-line1' }, [
+      el('span', { class: 'tactical-node-id', text: '#' + note.id }),
+      el('span', { class: 'tactical-node-status', text: statusLabel(note.status) }),
+    ]),
+    el('div', { class: 'tactical-node-title', text: truncateForNode(noteTitleOrExcerpt(note)) }),
+  ])
+  if (!isCurrent) {
+    node.addEventListener('click', () => navigateToNote(note.id))
+    node.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        navigateToNote(note.id)
+      }
+    })
+  }
+  return node
+}
+
+// §〇.1-2: every call re-runs the live pending-leaf query from scratch —
+// called on initial open AND by the refresh button, never memoized across
+// calls. §〇.3: no caching layer exists here to need a freshness disclaimer
+// for, but the "查詢於 HH:MM:SS" stamp is shown anyway so a stale screen is
+// never mistaken for a live one, and so the §五.1 manual re-open-and-compare
+// acceptance test has a visible timestamp to check against.
+async function loadTacticalBoard(noteId) {
+  renderTacticalLoading(noteId)
+  let note
+  try {
+    note = await getNoteById(noteId)
+  } catch (err) {
+    renderTacticalMessage(noteId, friendlyErrorMessage(err))
+    return
+  }
+  if (!note) {
+    renderTacticalMessage(noteId, '找不到這則便利貼，或你沒有查看權限。')
+    return
+  }
+  if (note.deleted_at) {
+    renderTacticalMessage(noteId, '這則便利貼已在垃圾桶，任務戰術盤暫不適用。')
+    return
+  }
+
+  let trail = []
+  try {
+    ;({ trail } = await getReplyTrailUp(note))
+  } catch {
+    renderTacticalMessage(noteId, '無法載入上游任務鏈，請稍後再試')
+    return
+  }
+
+  let directChildren = []
+  try {
+    directChildren = await listReplies(note.id)
+  } catch {
+    renderTacticalMessage(noteId, '無法載入分支，請稍後再試')
+    return
+  }
+
+  const rootId = trail.length ? trail[0].id : note.id
+  let pendingLeaves = []
+  try {
+    const { nodesById, childrenOf } = await scanReplyTree(rootId)
+    pendingLeaves = findPendingLeaves(nodesById, childrenOf)
+  } catch {
+    // §〇's whole point: never guess at the ball position from partial
+    // data. A visible "we don't know" beats a confident wrong answer.
+    renderTacticalMessage(noteId, '無法查詢球的位置，請稍後再試')
+    return
+  }
+
+  const pendingIds = new Set(pendingLeaves.map((n) => n.id))
+  const queriedAt = new Date()
+
+  const trailRow = el('div', { class: 'tactical-trail' })
+  trail.forEach((ancestor) => {
+    trailRow.appendChild(tacticalNode(ancestor, { isBall: pendingIds.has(ancestor.id) }))
+    trailRow.appendChild(el('div', { class: 'tactical-arrow', 'aria-hidden': 'true', text: '→' }))
+  })
+
+  const branchesCol = el('div', { class: 'tactical-branches' })
+  directChildren.forEach((child) => branchesCol.appendChild(tacticalNode(child, { isBall: pendingIds.has(child.id) })))
+
+  let ballSummary
+  if (pendingLeaves.length === 1) {
+    ballSummary = el('p', { class: 'tactical-ball-summary', text: `🟡 目前球在 ${recipientOrUnassigned(pendingLeaves[0])}` })
+  } else if (pendingLeaves.length > 1) {
+    ballSummary = el('div', { class: 'tactical-ball-summary' }, [
+      el('p', { text: `🟡 目前有 ${pendingLeaves.length} 條分支待處理` }),
+      el(
+        'ul',
+        {},
+        pendingLeaves.map((n) => el('li', { text: `#${n.id}　${recipientOrUnassigned(n)}` }))
+      ),
+    ])
+  } else {
+    ballSummary = el('p', { class: 'tactical-ball-summary', text: '✅ 此任務鏈已無待處理項目' })
+  }
+
+  renderTacticalShell([
+    el('div', { class: 'tactical-header' }, [
+      el('h2', { text: '任務戰術盤' }),
+      el('button', { class: 'tactical-refresh-btn', type: 'button', text: '重新查詢', onclick: () => loadTacticalBoard(noteId) }),
+      el('span', { class: 'tactical-freshness', text: '查詢於 ' + queriedAt.toLocaleTimeString() }),
+      el('button', { class: 'tactical-close', type: 'button', 'aria-label': '關閉任務戰術盤', text: '✕', onclick: () => navigateToNote(noteId) }),
+    ]),
+    ballSummary,
+    el('div', { class: 'tactical-layout' }, [trailRow, tacticalNode(note, { isCurrent: true, isBall: pendingIds.has(note.id) }), branchesCol]),
+  ])
+}
+
+async function syncTacticalFromHash() {
+  if (!currentSession || !tacticalPanelEl) return
+  const id = getTacticalNoteIdFromHash()
+  if (id == null) {
+    closeTacticalPanel()
+    return
+  }
+  await loadTacticalBoard(id)
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && tacticalPanelEl && !tacticalPanelEl.classList.contains('hidden')) {
+    const id = getTacticalNoteIdFromHash()
+    if (id != null) navigateToNote(id)
+  }
+})
+
+onHashChange(syncTacticalFromHash)
+
 function renderDetailNote(note, { foundInList } = {}) {
   let editing = false
 
@@ -2436,7 +2621,12 @@ function renderDetailNote(note, { foundInList } = {}) {
       el('pre', { class: 'detail-content', text: note.content }),
       attachments.element,
       tagsEl,
-      el('h3', { class: 'reply-context-heading', text: '回覆脈絡' }),
+      el('div', { class: 'reply-context-header-row' }, [
+        el('h3', { class: 'reply-context-heading', text: '回覆脈絡' }),
+        // id=450 P0: only entry point into the tactical board — no other nav
+        // (e.g. a global dashboard) exists yet, that's explicitly P1 scope.
+        el('button', { class: 'tactical-open-btn', type: 'button', text: '開啟任務戰術盤', onclick: () => navigateToTactical(note.id) }),
+      ]),
       replyContextMount,
       el('div', { class: 'note-actions' }, [statusSelect, deleteBtn]),
     ])
