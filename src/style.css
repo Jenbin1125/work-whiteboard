@@ -784,6 +784,17 @@ body.body-scroll-locked { overflow: hidden; }
 .tactical-freshness { font-size: 0.75rem; color: #888; }
 .tactical-close { background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #666; padding: 0.3rem 0.5rem; }
 
+/* id=296 (甲-lite) §①: manual highlight-by-recipient — matching nodes/chips
+   stay full-opacity, everything else fades via .tactical-faded below. */
+.tactical-filter-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #444; }
+.tactical-filter-label { font-size: 0.82rem; color: #444; }
+.tactical-recipient-filter { font-size: 0.82rem; padding: 0.2rem 0.4rem; border: 1px solid #ccc; border-radius: 6px; }
+.tactical-faded { opacity: 0.35; }
+
+/* §④: rule-based, non-decisional hint line — deliberately plain/muted so it
+   never reads as a system verdict. */
+.tactical-hint { font-size: 0.78rem; color: #888; margin: 0; }
+
 .tactical-ball-summary { font-size: 0.9rem; }
 
 /* id=450§九.1: pending-leaf chips — click-to-open, same as any board node. */
@@ -829,7 +840,11 @@ body.body-scroll-locked { overflow: hidden; }
   gap: 0.2rem;
 }
 .tactical-node:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
-.tactical-node-line1 { display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: #888; }
+.tactical-node-line1 { display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: #888; flex-wrap: wrap; }
+/* id=296 (甲-lite) §③: single shared badge style for id=452's task_type_hint
+   dictionary — no per-type color-coding, same "no six-color system" spirit
+   as the gray/amber node distinction (§二 of id=450). */
+.tactical-node-badge { background: #f1f5f9; color: #475569; border-radius: 4px; padding: 0.05rem 0.4rem; font-size: 0.7rem; }
 .tactical-node-recipient { font-size: 0.8rem; color: #445; }
 .tactical-node-title { font-weight: 600; font-size: 0.88rem; }
 .tactical-gray { border-left: 4px solid #cbd5e1; }

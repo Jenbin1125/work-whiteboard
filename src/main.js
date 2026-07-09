@@ -2339,8 +2339,16 @@ async function loadReplyContext(note, container) {
 // only allowed to reach the screen if its sequence number is still current.
 let tacticalLoadSeq = 0
 
+// id=296 (甲-lite) §①: the manually-selected recipient highlight persists
+// across a 重新查詢 click (same loadTacticalBoard call re-reading it) but
+// resets whenever the panel is closed — opening a different note's board
+// starts unfiltered rather than silently carrying over a filter chosen for
+// an unrelated chain.
+let tacticalRecipientFilter = ''
+
 function closeTacticalPanel() {
   tacticalLoadSeq += 1
+  tacticalRecipientFilter = ''
   if (!tacticalPanelEl) return
   tacticalPanelEl.classList.add('hidden')
   tacticalPanelEl.replaceChildren()
@@ -2372,13 +2380,33 @@ function renderTacticalMessage(noteId, text) {
   ])
 }
 
+// id=296 (甲-lite) §②③: exact same CASE WHEN order as id=452 §二's SQL
+// heuristic — title-based rules take priority over the recipient-IS-NULL
+// check, and this is the ONE dictionary (id=452's 待審查/待驗證/待實作/可能
+// 可收束/需指定接球者/unknown) shared by both the chip text (②) and the node
+// badge (③); GPT #251's original 交棒/審查/修正/PASS/HOLD/收尾 dictionary is
+// retired per id=449§十, not reimplemented here. Hint only — never drives
+// auto-archive or auto-PASS/HOLD (id=452 §二 護欄).
+function taskTypeHint(note) {
+  const title = note.title || ''
+  if (/審查|覆核/i.test(title)) return '待審查'
+  if (/commit|已修|實作/i.test(title)) return '待驗證'
+  if (/交棒|請實作|請補/i.test(title)) return '待實作'
+  if (/已收|感謝|收束/i.test(title)) return '可能可收束'
+  if (!note.recipient) return '需指定接球者'
+  return 'unknown'
+}
+
 // id=450§九.5: "目前查看" (isCurrent, dark outline) and "待處理球" (isBall,
 // amber left border) are visually distinct and can independently apply to
 // the same node — see the legend rendered alongside the ball summary.
 function tacticalNode(note, { isCurrent, isBall } = {}) {
   const classes = ['tactical-node', isBall ? 'tactical-amber' : 'tactical-gray']
   if (isCurrent) classes.push('tactical-current')
-  const props = { class: classes.join(' ') }
+  // id=296 §①: data-recipient carries the raw canonical value (empty string
+  // sentinel for NULL) so applyTacticalRecipientFilter can fade/highlight
+  // this already-rendered node without re-querying anything.
+  const props = { class: classes.join(' '), 'data-recipient': note.recipient || '' }
   if (!isCurrent) {
     props.role = 'button'
     props.tabindex = '0'
@@ -2387,6 +2415,7 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
     el('div', { class: 'tactical-node-line1' }, [
       el('span', { class: 'tactical-node-id', text: '#' + note.id }),
       el('span', { class: 'tactical-node-status', text: statusLabel(note.status) }),
+      el('span', { class: 'tactical-node-badge', text: taskTypeHint(note) }),
     ]),
     // §九.2: explicit "收：X" line so who's holding the ball doesn't require
     // cross-referencing the text summary above.
@@ -2408,14 +2437,57 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
 // §九.1: pending-leaf chips, shared by both the single-ball and multi-branch
 // summary cases — each is click-to-open, same mechanism as a board node
 // (§三's only interaction type, not a new one).
+// id=296 §②: chip text also carries the same task_type_hint as the node
+// badge (one shared dictionary, §③).
 function tacticalBallChips(pendingLeaves) {
   const row = el('div', { class: 'tactical-ball-chips' })
   pendingLeaves.forEach((n) => {
-    const chip = el('button', { type: 'button', class: 'tactical-ball-chip', text: `#${n.id} ${recipientOrUnassigned(n)}` })
+    const chip = el('button', {
+      type: 'button',
+      class: 'tactical-ball-chip',
+      'data-recipient': n.recipient || '',
+      text: `#${n.id} ${recipientOrUnassigned(n)} · ${taskTypeHint(n)}`,
+    })
     chip.addEventListener('click', () => navigateToNote(n.id))
     row.appendChild(chip)
   })
   return row
+}
+
+// id=296 §①: manual dropdown, reusing the existing recipient option-building
+// helper and the same UNSET_RECIPIENT sentinel already used by the row-list
+// To filter — no new "unassigned" concept invented here.
+function buildTacticalRecipientFilter(currentValue, onChange) {
+  const select = el(
+    'select',
+    { class: 'tactical-recipient-filter', 'aria-label': '依收件人高亮' },
+    [option('', '全部'), option(UNSET_RECIPIENT, '未指派'), ...buildRecipientOptions()]
+  )
+  select.value = currentValue
+  select.addEventListener('change', () => onChange(select.value))
+  return select
+}
+
+// id=296 §①: pure DOM pass over already-rendered nodes/chips — no new query,
+// filters/highlights against the data-recipient attribute set at render time.
+function applyTacticalRecipientFilter() {
+  if (!tacticalPanelEl) return
+  const filter = tacticalRecipientFilter
+  tacticalPanelEl.querySelectorAll('.tactical-node[data-recipient], .tactical-ball-chip[data-recipient]').forEach((elm) => {
+    const matches = !filter || elm.dataset.recipient === (filter === UNSET_RECIPIENT ? '' : filter)
+    elm.classList.toggle('tactical-faded', !matches)
+  })
+}
+
+// id=296 §④: rule-based, combines only signals already on screen — never a
+// new query, never a judgment call about whether work is actually done.
+function buildTacticalHint(pendingLeaves, filterValue) {
+  const parts = []
+  if (pendingLeaves.length > 0) parts.push(`${pendingLeaves.length}顆球待處理`)
+  if (pendingLeaves.some((n) => !n.recipient)) parts.push('有未指派球')
+  if (filterValue) parts.push(`已篩選：${filterValue === UNSET_RECIPIENT ? '未指派' : recipientLabel(filterValue)}`)
+  parts.push('僅供提示，非裁決')
+  return parts.join('・')
 }
 
 // §〇.1-2: every call re-runs the live pending-leaf query from scratch —
@@ -2532,6 +2604,21 @@ async function loadTacticalBoard(noteId) {
         ])
       : null
 
+  // id=296 (甲-lite) §①/④: filter dropdown + its dependent hint line don't
+  // require re-fetching anything, so the filter's onChange updates both in
+  // place — applyTacticalRecipientFilter fades/highlights the already-built
+  // node/chip elements, and hintEl's text is recomputed from the same
+  // pendingLeaves this render already has in closure.
+  const hintEl = el('p', { class: 'tactical-hint', text: buildTacticalHint(pendingLeaves, tacticalRecipientFilter) })
+  const filterRow = el('div', { class: 'tactical-filter-row' }, [
+    el('label', { class: 'tactical-filter-label', text: '依收件人高亮' }),
+    buildTacticalRecipientFilter(tacticalRecipientFilter, (value) => {
+      tacticalRecipientFilter = value
+      applyTacticalRecipientFilter()
+      hintEl.textContent = buildTacticalHint(pendingLeaves, tacticalRecipientFilter)
+    }),
+  ])
+
   renderTacticalShell([
     el('div', { class: 'tactical-header' }, [
       el('h2', { text: '任務戰術盤' }),
@@ -2539,10 +2626,15 @@ async function loadTacticalBoard(noteId) {
       el('span', { class: 'tactical-freshness', text: '查詢於 ' + queriedAt.toLocaleTimeString() }),
       el('button', { class: 'tactical-close', type: 'button', 'aria-label': '關閉任務戰術盤', text: '✕', onclick: () => navigateToNote(noteId) }),
     ]),
+    filterRow,
     ballSummary,
+    hintEl,
     ...(legend ? [legend] : []),
     el('div', { class: 'tactical-layout' }, columns),
   ])
+  // §①: re-apply the persisted filter to this render's freshly-built DOM
+  // (every loadTacticalBoard call replaces the node/chip elements wholesale).
+  applyTacticalRecipientFilter()
 }
 
 async function syncTacticalFromHash() {
