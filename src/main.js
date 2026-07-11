@@ -2692,6 +2692,15 @@ let globalTacticalLoadSeq = 0
 // convention as 甲-lite's tacticalRecipientFilter), resets when the panel
 // closes so reopening always starts fully collapsed.
 let globalTacticalExpandedLanes = new Set()
+// §十.10.1.2: sort mode toggle — 'count' is the unchanged §三 default;
+// 'stalest' is the new pure-MIN(created_at) mode. Resets to the default on
+// close, same convention as the filter/expand state above.
+let globalTacticalSortMode = 'count'
+// §十: toggling sort mode is a pure re-render over already-fetched data, not
+// a new query (spec says so explicitly) — these cache the last successful
+// fetch so the toggle buttons don't trigger a redundant SELECT.
+let globalTacticalLastBalls = null
+let globalTacticalLastQueriedAt = null
 
 // §5.1/§七.5 protective ceilings — CC's chosen numbers (spec gives the
 // principle, not the figures): generous headroom above the ~9 lanes seen on
@@ -2703,6 +2712,9 @@ const GLOBAL_LANE_PREVIEW_CAP = 5
 function closeGlobalTacticalPanel() {
   globalTacticalLoadSeq += 1
   globalTacticalExpandedLanes = new Set()
+  globalTacticalSortMode = 'count'
+  globalTacticalLastBalls = null
+  globalTacticalLastQueriedAt = null
   if (!globalTacticalPanelEl) return
   globalTacticalPanelEl.classList.add('hidden')
   globalTacticalPanelEl.replaceChildren()
@@ -2736,9 +2748,11 @@ function renderGlobalTacticalMessage(text) {
 }
 
 // §一: recipient (or the UNSET_RECIPIENT sentinel already used elsewhere in
-// this app) → one lane per group. §三 sort: unassigned first → ball count
-// desc → recipient label. Pure function over already-fetched data — no I/O,
-// same "derive, don't re-query" discipline as findPendingLeaves.
+// this app) → one lane per group, plus §十: each lane's oldestCreatedAt
+// (MIN(created_at) across its balls) for the "最舊等待" line and the
+// stalest-first sort mode. Pure function over already-fetched data — no I/O,
+// same "derive, don't re-query" discipline as findPendingLeaves. Unsorted —
+// see sortGlobalLanes for the two order modes.
 function groupGlobalBalls(balls) {
   const map = new Map()
   balls.forEach((b) => {
@@ -2746,19 +2760,42 @@ function groupGlobalBalls(balls) {
     if (!map.has(key)) map.set(key, [])
     map.get(key).push(b)
   })
-  const lanes = Array.from(map.entries()).map(([key, laneBalls]) => ({
+  return Array.from(map.entries()).map(([key, laneBalls]) => ({
     key,
     label: key === UNSET_RECIPIENT ? '未指派' : recipientLabel(key),
     balls: laneBalls,
+    oldestCreatedAt: Math.min(...laneBalls.map((b) => new Date(b.created_at).getTime())),
   }))
-  lanes.sort((a, b) => {
+}
+
+// §三 (unchanged default) vs §十.10.1.2 (new): the stalest-first mode is
+// deliberately NOT unassigned-first — its whole point is to honestly surface
+// whichever lane has waited longest, not to keep applying the default's
+// unassigned-priority rule on top.
+function sortGlobalLanes(lanes, mode) {
+  const sorted = [...lanes]
+  if (mode === 'stalest') {
+    sorted.sort((a, b) => a.oldestCreatedAt - b.oldestCreatedAt)
+    return sorted
+  }
+  sorted.sort((a, b) => {
     const aUnset = a.key === UNSET_RECIPIENT
     const bUnset = b.key === UNSET_RECIPIENT
     if (aUnset !== bUnset) return aUnset ? -1 : 1
     if (a.balls.length !== b.balls.length) return b.balls.length - a.balls.length
     return a.label.localeCompare(b.label, 'zh-Hant')
   })
-  return lanes
+  return sorted
+}
+
+// §十.10.1.1: a pure fact, no threshold/color grading — CC's chosen
+// granularity (hours under a day, whole days beyond), same "give a number,
+// don't judge it" spirit as task_type_hint's護欄.
+function formatWaitDuration(ms) {
+  const hours = ms / 3600000
+  if (hours < 1) return '不到1小時'
+  if (hours < 24) return `約${Math.round(hours)}小時`
+  return `約${Math.round(hours / 24)}天`
 }
 
 // §九.3-analog for P1: clicking a lane's collapsed/expanded header never
@@ -2813,18 +2850,28 @@ function renderGlobalBallRow(ball) {
   return row
 }
 
-function renderGlobalLane(lane) {
+// §十.10.1.1: the wait-duration line sits in the always-visible header, not
+// gated behind expand — the whole point is a Human can tell "which lane is
+// stalest" without opening anything, matching how the count badge already
+// works.
+function renderGlobalLane(lane, queriedAt) {
   const expanded = globalTacticalExpandedLanes.has(lane.key)
   const laneEl = el('div', { class: 'global-lane', 'data-lane-key': lane.key })
   const headerBtn = el(
     'button',
     { type: 'button', class: 'global-lane-header', 'aria-expanded': expanded ? 'true' : 'false' },
-    [el('span', { class: 'global-lane-label', text: lane.label }), el('span', { class: 'global-lane-count', text: String(lane.balls.length) })]
+    [
+      el('div', { class: 'global-lane-header-main' }, [
+        el('span', { class: 'global-lane-label', text: lane.label }),
+        el('span', { class: 'global-lane-count', text: String(lane.balls.length) }),
+      ]),
+      el('span', { class: 'global-lane-wait', text: '最舊等待 ' + formatWaitDuration(queriedAt.getTime() - lane.oldestCreatedAt) }),
+    ]
   )
   headerBtn.addEventListener('click', () => {
     if (expanded) globalTacticalExpandedLanes.delete(lane.key)
     else globalTacticalExpandedLanes.add(lane.key)
-    laneEl.replaceWith(renderGlobalLane(lane))
+    laneEl.replaceWith(renderGlobalLane(lane, queriedAt))
   })
   laneEl.appendChild(headerBtn)
   if (expanded) {
@@ -2838,12 +2885,73 @@ function renderGlobalLane(lane) {
   return laneEl
 }
 
-function renderGlobalLaneList(lanes, overflowCount) {
-  const children = lanes.map((lane) => renderGlobalLane(lane))
+function renderGlobalLaneList(lanes, overflowCount, queriedAt) {
+  const children = lanes.map((lane) => renderGlobalLane(lane, queriedAt))
   if (overflowCount > 0) {
     children.push(el('p', { class: 'global-lane-overflow', text: `還有 ${overflowCount} 個收件人群組未顯示於此畫面` }))
   }
   return el('div', { class: 'global-lane-list' }, children)
+}
+
+// §十.10.1.2: pure re-render over cached data — no query, since this is a
+// display/sort preference, not a freshness concern (§〇 is still honored:
+// the underlying data is whatever the last real fetch returned).
+function renderGlobalSortToggle() {
+  const modes = [
+    { key: 'count', label: '依球數' },
+    { key: 'stalest', label: '依停滯時間' },
+  ]
+  const buttons = modes.map(({ key, label }) =>
+    el('button', {
+      type: 'button',
+      class: 'global-sort-btn' + (globalTacticalSortMode === key ? ' active' : ''),
+      'aria-pressed': globalTacticalSortMode === key ? 'true' : 'false',
+      text: label,
+    })
+  )
+  buttons.forEach((btn, i) => {
+    btn.addEventListener('click', () => {
+      const key = modes[i].key
+      if (globalTacticalSortMode === key) return
+      globalTacticalSortMode = key
+      if (globalTacticalLastBalls) renderGlobalTacticalBody(globalTacticalLastBalls, globalTacticalLastQueriedAt)
+    })
+  })
+  return el('div', { class: 'global-sort-toggle', role: 'group', 'aria-label': '排序方式' }, buttons)
+}
+
+// Shared by the initial load/refresh path AND the sort-toggle's cache-only
+// re-render — the only difference is whether `balls` just came off the wire
+// or is the last fetch's cached copy (§十.10.1.2: toggling sort is not a
+// new query).
+function renderGlobalTacticalBody(balls, queriedAt) {
+  const allLanes = groupGlobalBalls(balls)
+
+  if (allLanes.length === 0) {
+    renderGlobalTacticalShell([
+      globalTacticalHeader({ withRefresh: true, queriedAt }),
+      el('p', { class: 'tactical-ball-summary', text: '✅ 全域目前沒有待處理項目' }),
+    ])
+    return
+  }
+
+  // §5.1/§七.5: constellation and list must agree on which lanes exist —
+  // both render from this one capped slice, not two independently-truncated
+  // views of the same data. Capping happens AFTER sorting by the active
+  // mode, so "依停滯時間" surfaces the actual 20 stalest lanes if the cap
+  // is ever engaged, not whichever 20 happened to lead by count.
+  const sortedLanes = sortGlobalLanes(allLanes, globalTacticalSortMode)
+  const lanes = sortedLanes.slice(0, GLOBAL_LANE_CAP)
+  const overflowCount = sortedLanes.length - lanes.length
+
+  renderGlobalTacticalShell([
+    globalTacticalHeader({ withRefresh: true, queriedAt }),
+    // §十.10.1.3: 星座摘要不變動 — same renderGlobalConstellation as before,
+    // unaware of sort mode (it always arranges by count internally, per §二).
+    renderGlobalConstellation(lanes),
+    renderGlobalSortToggle(),
+    renderGlobalLaneList(lanes, overflowCount, queriedAt),
+  ])
 }
 
 // §〇 (最高優先): every open/refresh is a fresh SELECT against
@@ -2865,27 +2973,9 @@ async function loadGlobalTacticalBoard() {
   if (stale()) return
 
   const queriedAt = new Date()
-  const allLanes = groupGlobalBalls(balls)
-
-  if (allLanes.length === 0) {
-    renderGlobalTacticalShell([
-      globalTacticalHeader({ withRefresh: true, queriedAt }),
-      el('p', { class: 'tactical-ball-summary', text: '✅ 全域目前沒有待處理項目' }),
-    ])
-    return
-  }
-
-  // §5.1/§七.5: constellation and list must agree on which lanes exist —
-  // both render from this one capped slice, not two independently-truncated
-  // views of the same data.
-  const lanes = allLanes.slice(0, GLOBAL_LANE_CAP)
-  const overflowCount = allLanes.length - lanes.length
-
-  renderGlobalTacticalShell([
-    globalTacticalHeader({ withRefresh: true, queriedAt }),
-    renderGlobalConstellation(lanes),
-    renderGlobalLaneList(lanes, overflowCount),
-  ])
+  globalTacticalLastBalls = balls
+  globalTacticalLastQueriedAt = queriedAt
+  renderGlobalTacticalBody(balls, queriedAt)
 }
 
 async function syncGlobalTacticalFromHash() {

@@ -897,6 +897,21 @@ body.body-scroll-locked { overflow: hidden; }
 .global-constellation-node:hover { background: #fef3c7; }
 .global-constellation-node:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 
+/* id=463§十.10.1.2: sort mode toggle — plain two-button group, same visual
+   weight as the tactical refresh button, not styled as a form control. */
+.global-sort-toggle { display: flex; gap: 0.4rem; margin: 0.25rem 0; }
+.global-sort-btn {
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.78rem;
+  color: #555;
+  cursor: pointer;
+}
+.global-sort-btn.active { border-color: #d97706; color: #92400e; background: #fffbeb; }
+.global-sort-btn:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
+
 /* §三: the main operating surface — collapsed lane shows label + amber
    count badge; expanded reveals a capped preview of individual balls. */
 .global-lane-list { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -908,6 +923,7 @@ body.body-scroll-locked { overflow: hidden; }
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  flex-wrap: wrap;
   background: none;
   border: none;
   padding: 0.65rem 0.85rem;
@@ -917,8 +933,14 @@ body.body-scroll-locked { overflow: hidden; }
   text-align: left;
 }
 .global-lane-header:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
+.global-lane-header-main { display: flex; align-items: center; gap: 0.5rem; }
 .global-lane-label { font-weight: 600; }
 .global-lane-count { background: #fffbeb; border: 1px solid #d97706; color: #92400e; border-radius: 999px; padding: 0.05rem 0.55rem; font-size: 0.78rem; flex-shrink: 0; }
+/* id=463§十.10.1.1: pure fact, no color grading — deliberately the same
+   muted gray as other secondary text (freshness stamp, col labels), not the
+   amber "ball" color, so it reads as neutral information rather than a
+   warning signal. */
+.global-lane-wait { font-size: 0.72rem; color: #888; flex-shrink: 0; }
 .global-lane-balls { display: flex; flex-direction: column; padding: 0 0.85rem 0.6rem; }
 .global-ball-row {
   display: flex;
