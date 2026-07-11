@@ -235,6 +235,21 @@ export function findPendingLeaves(nodesById, childrenOf) {
   return leaves
 }
 
+// id=463 §五: P1 v1's sole data source — a read-only view, not a new query
+// definition. Both the constellation summary and the flat list (main.js)
+// derive from one call to this per render, so the two never show a
+// different ball count for the same recipient (id=463§〇/§七.1). SELECT
+// only, matching this view's grants (§6 gate already verified RLS gates it
+// correctly for real JWTs — see id=453§6/§7).
+const GLOBAL_BALLS_VIEW = 'v_global_pending_balls'
+const GLOBAL_BALLS_COLUMNS = 'note_id, title, recipient, status, task_type_hint, created_at, updated_at, reply_to_note_id, queried_at'
+
+export async function listGlobalPendingBalls() {
+  const { data, error } = await supabase.from(GLOBAL_BALLS_VIEW).select(GLOBAL_BALLS_COLUMNS).order('created_at', { ascending: true })
+  if (error) throw error
+  return data
+}
+
 export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId }) {
   // Only writable columns per id=421 §2 / id=426 §2 / id=432 §〇 / id=439 §三
   // grants — never send id / created_by_uid / last_modified_by /

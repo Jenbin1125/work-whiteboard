@@ -1,5 +1,6 @@
 const NOTE_HASH_RE = /^#\/note\/(\d+)$/
 const TACTICAL_HASH_RE = /^#\/note\/(\d+)\/tactical$/
+const GLOBAL_TACTICAL_HASH_RE = /^#\/global-tactical$/
 
 export function getNoteIdFromHash() {
   const m = window.location.hash.match(NOTE_HASH_RE)
@@ -21,6 +22,17 @@ export function getTacticalNoteIdFromHash() {
 
 export function navigateToTactical(id) {
   window.location.hash = `#/note/${id}/tactical`
+}
+
+// id=463§九: a top-level route, deliberately not nested under #/note/ — it
+// never refers to one particular note, so it lives alongside (not inside)
+// the NOTE_HASH_RE/TACTICAL_HASH_RE family rather than widening either one.
+export function isGlobalTacticalHash() {
+  return GLOBAL_TACTICAL_HASH_RE.test(window.location.hash)
+}
+
+export function navigateToGlobalTactical() {
+  window.location.hash = '#/global-tactical'
 }
 
 export function clearNoteHash() {

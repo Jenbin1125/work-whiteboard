@@ -756,6 +756,20 @@ body.body-scroll-locked { overflow: hidden; }
   cursor: pointer;
 }
 
+/* id=463§九.2: the P1 global entry — fixed, always visible, next to the
+   page title (not the per-note entry above, which lives in the detail
+   panel's reply-context header instead). */
+.header-title-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.global-tactical-open-btn {
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.82rem;
+  color: #444;
+  cursor: pointer;
+}
+
 /* id=450 P0: 任務戰術盤 — full-screen (not the 560px detail side panel), a
    horizontal "tactics board" layout instead of the reply-context sidebar's
    vertical list. Deliberately only 2 colors (gray/amber, §二) and no
@@ -857,6 +871,75 @@ body.body-scroll-locked { overflow: hidden; }
   .tactical-flow-step { flex-direction: column; align-items: stretch; }
   .tactical-arrow { transform: rotate(90deg); align-self: center; }
 }
+
+/* id=463 P1 v1: 全域任務戰術盤 — reuses .tactical-panel/.tactical-board/
+   .tactical-header/.tactical-refresh-btn/.tactical-freshness/.tactical-close
+   from the single-chain board above (same surface, same 2-color language),
+   only the constellation + lane-list body below is new. */
+.global-tactical-board { gap: 0.5rem; }
+
+/* §二: minimal circles, size reflects ball count — no per-agent color, just
+   the shared gray/amber vocabulary (amber = the count itself is the "ball"
+   signal, matching how amber already means "pending" everywhere else). */
+.global-constellation { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0 0.75rem; }
+.global-constellation-node {
+  border-radius: 50%;
+  background: #fffbeb;
+  border: 1px solid #d97706;
+  color: #92400e;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  padding: 0;
+}
+.global-constellation-node:hover { background: #fef3c7; }
+.global-constellation-node:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+
+/* §三: the main operating surface — collapsed lane shows label + amber
+   count badge; expanded reveals a capped preview of individual balls. */
+.global-lane-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.global-lane { border: 1px solid #e2e2e2; border-radius: 6px; background: #fff; transition: background-color 0.3s ease, border-color 0.3s ease; }
+.global-lane-highlighted { background: #fffbeb; border-color: #d97706; }
+.global-lane-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  padding: 0.65rem 0.85rem;
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: #333;
+  text-align: left;
+}
+.global-lane-header:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
+.global-lane-label { font-weight: 600; }
+.global-lane-count { background: #fffbeb; border: 1px solid #d97706; color: #92400e; border-radius: 999px; padding: 0.05rem 0.55rem; font-size: 0.78rem; flex-shrink: 0; }
+.global-lane-balls { display: flex; flex-direction: column; padding: 0 0.85rem 0.6rem; }
+.global-ball-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  border-top: 1px solid #f0f0f0;
+  padding: 0.45rem 0;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-size: 0.85rem;
+  color: #333;
+}
+.global-ball-row:first-child { border-top: none; }
+.global-ball-row:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
+.global-ball-id { color: #888; font-size: 0.75rem; flex-shrink: 0; }
+.global-lane-more,
+.global-lane-overflow { margin: 0 0.85rem 0.6rem; font-size: 0.75rem; color: #888; }
+.global-lane-overflow { margin: 0.4rem 0 0; }
 
 /* id=440 §一: reply-target chip (Compose + detail edit form) — same look as
    a .tag-chip, this just isn't a tag. */

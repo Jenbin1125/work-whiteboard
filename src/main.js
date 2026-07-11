@@ -21,9 +21,19 @@ import {
   getReplyTrailUp,
   scanReplyTree,
   findPendingLeaves,
+  listGlobalPendingBalls,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
-import { getNoteIdFromHash, navigateToNote, clearNoteHash, onHashChange, getTacticalNoteIdFromHash, navigateToTactical } from './router.js'
+import {
+  getNoteIdFromHash,
+  navigateToNote,
+  clearNoteHash,
+  onHashChange,
+  getTacticalNoteIdFromHash,
+  navigateToTactical,
+  isGlobalTacticalHash,
+  navigateToGlobalTactical,
+} from './router.js'
 import { buildReferenceText, buildAttachmentReferenceText, copyToClipboard } from './copyReference.js'
 import { statusLabel, projectLabel, sourceLabel, fromLabel, recipientLabel, RECIPIENT_GROUPS, noteTitleOrExcerpt } from './labels.js'
 import { friendlyErrorMessage } from './friendlyError.js'
@@ -79,6 +89,7 @@ let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, 
 let activeNoteId = null
 let detailPanelEl = null
 let tacticalPanelEl = null
+let globalTacticalPanelEl = null
 let listMountEl = null
 let openMenuCloser = null
 let copyInFlight = false
@@ -112,12 +123,14 @@ function render() {
   app.replaceChildren()
   detailPanelEl = null
   tacticalPanelEl = null
+  globalTacticalPanelEl = null
   listMountEl = null
   composeFormRef = null
   if (currentSession) {
     app.appendChild(renderBoard())
     syncDetailFromHash()
     syncTacticalFromHash()
+    syncGlobalTacticalFromHash()
   } else {
     app.appendChild(renderLogin())
   }
@@ -177,9 +190,15 @@ function renderBoard() {
   // weight, sits between the title block and the user menu. This supersedes
   // §四.4's "top of the list column" placement and fully replaces the old
   // Compose-form warning (removed below in renderNoteForm).
+  // id=463§九.2: fixed entry, always visible regardless of current
+  // filter/scroll state — sits right next to the title, not tucked into the
+  // user menu or a secondary settings area.
   const header = el('header', {}, [
     el('div', { class: 'header-titles' }, [
-      el('h1', { text: '工作白板' }),
+      el('div', { class: 'header-title-row' }, [
+        el('h1', { text: '工作白板' }),
+        el('button', { class: 'global-tactical-open-btn', type: 'button', text: '進入任務戰術盤', onclick: () => navigateToGlobalTactical() }),
+      ]),
       el('p', { class: 'header-tagline', text: '快速留下、稍後整理' }),
     ]),
     el('p', { class: 'header-phi-note', text: '⚠️ 請勿貼入病人可辨識資訊（PHI）、密碼、API key/token，或未經授權的受版權內容。' }),
@@ -206,6 +225,13 @@ function renderBoard() {
   // board's horizontal upstream/current/branches layout needs real width.
   tacticalPanelEl = el('div', { class: 'tactical-panel hidden', 'aria-label': '任務戰術盤' })
   container.appendChild(tacticalPanelEl)
+
+  // id=463 P1 v1: a second, independent full-screen overlay — global (not
+  // tied to any one note), lives at its own top-level route (#/global-tactical,
+  // router.js), reuses the same .tactical-panel surface styling as the
+  // single-chain board above for visual consistency (still just 2 colors).
+  globalTacticalPanelEl = el('div', { class: 'tactical-panel hidden', 'aria-label': '全域任務戰術盤' })
+  container.appendChild(globalTacticalPanelEl)
 
   refreshList(listMount).then((notes) => {
     // Mobile: an empty board still opens the compose form so first-time use
@@ -2655,6 +2681,229 @@ document.addEventListener('keydown', (e) => {
 })
 
 onHashChange(syncTacticalFromHash)
+
+// id=463 P1 v1: 全域任務戰術盤 (C方案 — 星座摘要 + 扁平清單). Lives at its own
+// top-level route (#/global-tactical, router.js), independent of the
+// single-chain board above. §五/§七.1: constellation and list both derive
+// from ONE call to listGlobalPendingBalls() per render — never two separate
+// queries that could show a different ball count for the same recipient.
+let globalTacticalLoadSeq = 0
+// §三: which lanes are expanded — persists across a 重新查詢 click (same
+// convention as 甲-lite's tacticalRecipientFilter), resets when the panel
+// closes so reopening always starts fully collapsed.
+let globalTacticalExpandedLanes = new Set()
+
+// §5.1/§七.5 protective ceilings — CC's chosen numbers (spec gives the
+// principle, not the figures): generous headroom above the ~9 lanes seen on
+// live data (id=453§6: 8-9 groups across ~85-106 balls), and a small enough
+// per-lane preview to keep an expanded lane from dominating the screen.
+const GLOBAL_LANE_CAP = 20
+const GLOBAL_LANE_PREVIEW_CAP = 5
+
+function closeGlobalTacticalPanel() {
+  globalTacticalLoadSeq += 1
+  globalTacticalExpandedLanes = new Set()
+  if (!globalTacticalPanelEl) return
+  globalTacticalPanelEl.classList.add('hidden')
+  globalTacticalPanelEl.replaceChildren()
+}
+
+function renderGlobalTacticalShell(children) {
+  if (!globalTacticalPanelEl) return
+  globalTacticalPanelEl.classList.remove('hidden')
+  globalTacticalPanelEl.replaceChildren(el('div', { class: 'tactical-board global-tactical-board' }, children))
+}
+
+function globalTacticalHeader({ withRefresh, queriedAt } = {}) {
+  const children = [el('h2', { text: '全域任務戰術盤' })]
+  if (withRefresh) {
+    children.push(el('button', { class: 'tactical-refresh-btn', type: 'button', text: '重新查詢', onclick: () => loadGlobalTacticalBoard() }))
+    children.push(el('span', { class: 'tactical-freshness', text: '查詢於 ' + queriedAt.toLocaleTimeString() }))
+  }
+  // §九.3: closing goes back to the main board, not to any particular note —
+  // this view was never scoped to one, so clearNoteHash() (not navigateToNote)
+  // is the correct "back" target.
+  children.push(el('button', { class: 'tactical-close', type: 'button', 'aria-label': '關閉全域任務戰術盤', text: '✕', onclick: () => clearNoteHash() }))
+  return el('div', { class: 'tactical-header' }, children)
+}
+
+function renderGlobalTacticalLoading() {
+  renderGlobalTacticalShell([globalTacticalHeader(), el('p', { text: '載入中…' })])
+}
+
+function renderGlobalTacticalMessage(text) {
+  renderGlobalTacticalShell([globalTacticalHeader(), el('p', { class: 'flow-exception', text })])
+}
+
+// §一: recipient (or the UNSET_RECIPIENT sentinel already used elsewhere in
+// this app) → one lane per group. §三 sort: unassigned first → ball count
+// desc → recipient label. Pure function over already-fetched data — no I/O,
+// same "derive, don't re-query" discipline as findPendingLeaves.
+function groupGlobalBalls(balls) {
+  const map = new Map()
+  balls.forEach((b) => {
+    const key = b.recipient || UNSET_RECIPIENT
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(b)
+  })
+  const lanes = Array.from(map.entries()).map(([key, laneBalls]) => ({
+    key,
+    label: key === UNSET_RECIPIENT ? '未指派' : recipientLabel(key),
+    balls: laneBalls,
+  }))
+  lanes.sort((a, b) => {
+    const aUnset = a.key === UNSET_RECIPIENT
+    const bUnset = b.key === UNSET_RECIPIENT
+    if (aUnset !== bUnset) return aUnset ? -1 : 1
+    if (a.balls.length !== b.balls.length) return b.balls.length - a.balls.length
+    return a.label.localeCompare(b.label, 'zh-Hant')
+  })
+  return lanes
+}
+
+// §九.3-analog for P1: clicking a lane's collapsed/expanded header never
+// navigates — scrolling+highlighting the lane it corresponds to is the
+// constellation's ONLY interaction (id=463§二), reusing the same
+// scroll+timed-highlight convention as the row-list's applyHighlight().
+function highlightGlobalLane(key) {
+  if (!globalTacticalPanelEl) return
+  const laneEl = globalTacticalPanelEl.querySelector(`.global-lane[data-lane-key="${key}"]`)
+  if (!laneEl) return
+  laneEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  laneEl.classList.add('global-lane-highlighted')
+  setTimeout(() => laneEl.classList.remove('global-lane-highlighted'), 1600)
+}
+
+// §二: minimal circles only, size reflects ball count, number shown (spec
+// allows showing it), full label available via native title tooltip rather
+// than a permanent text label (space is limited at this scale). Sorted by
+// count alone here — deliberately NOT the list's unassigned-first rule,
+// since §二 explicitly says the summary "不強制套用清單的完整排序規則". Takes
+// the SAME already-capped lane set as the list below (see loadGlobalTacticalBoard)
+// — the two must always agree on which lanes exist, not just their counts.
+function renderGlobalConstellation(lanes) {
+  const maxCount = Math.max(1, ...lanes.map((l) => l.balls.length))
+  const MIN_SIZE = 28
+  const MAX_SIZE = 64
+  const ordered = [...lanes].sort((a, b) => b.balls.length - a.balls.length)
+  const nodes = ordered.map((lane) => {
+    const size = Math.round(MIN_SIZE + (lane.balls.length / maxCount) * (MAX_SIZE - MIN_SIZE))
+    const node = el('button', {
+      type: 'button',
+      class: 'global-constellation-node',
+      style: `width:${size}px;height:${size}px;font-size:${Math.max(10, Math.round(size / 3))}px`,
+      title: lane.label,
+      'aria-label': `${lane.label}：${lane.balls.length}顆球`,
+      text: String(lane.balls.length),
+    })
+    node.addEventListener('click', () => highlightGlobalLane(lane.key))
+    return node
+  })
+  return el('div', { class: 'global-constellation' }, nodes)
+}
+
+function renderGlobalBallRow(ball) {
+  const row = el('button', { type: 'button', class: 'global-ball-row' }, [
+    el('span', { class: 'global-ball-id', text: '#' + ball.note_id }),
+    el('span', { class: 'global-ball-title', text: truncateForNode(noteTitleOrExcerpt(ball)) }),
+  ])
+  // §三: clicking an individual ball reuses the existing single-chain
+  // tactical board — not a new interaction, not a note-detail navigation.
+  row.addEventListener('click', () => navigateToTactical(ball.note_id))
+  return row
+}
+
+function renderGlobalLane(lane) {
+  const expanded = globalTacticalExpandedLanes.has(lane.key)
+  const laneEl = el('div', { class: 'global-lane', 'data-lane-key': lane.key })
+  const headerBtn = el(
+    'button',
+    { type: 'button', class: 'global-lane-header', 'aria-expanded': expanded ? 'true' : 'false' },
+    [el('span', { class: 'global-lane-label', text: lane.label }), el('span', { class: 'global-lane-count', text: String(lane.balls.length) })]
+  )
+  headerBtn.addEventListener('click', () => {
+    if (expanded) globalTacticalExpandedLanes.delete(lane.key)
+    else globalTacticalExpandedLanes.add(lane.key)
+    laneEl.replaceWith(renderGlobalLane(lane))
+  })
+  laneEl.appendChild(headerBtn)
+  if (expanded) {
+    // §三: "顯示前N則＋還有M則的漸進揭露，不一次全部攤開" — capped preview,
+    // no further "load more" interaction in this v1 (spec doesn't ask for one).
+    const previewBalls = lane.balls.slice(0, GLOBAL_LANE_PREVIEW_CAP)
+    const overflowCount = lane.balls.length - previewBalls.length
+    laneEl.appendChild(el('div', { class: 'global-lane-balls' }, previewBalls.map((b) => renderGlobalBallRow(b))))
+    if (overflowCount > 0) laneEl.appendChild(el('p', { class: 'global-lane-more', text: `還有 ${overflowCount} 則` }))
+  }
+  return laneEl
+}
+
+function renderGlobalLaneList(lanes, overflowCount) {
+  const children = lanes.map((lane) => renderGlobalLane(lane))
+  if (overflowCount > 0) {
+    children.push(el('p', { class: 'global-lane-overflow', text: `還有 ${overflowCount} 個收件人群組未顯示於此畫面` }))
+  }
+  return el('div', { class: 'global-lane-list' }, children)
+}
+
+// §〇 (最高優先): every open/refresh is a fresh SELECT against
+// v_global_pending_balls — never a snapshot, never a dead example. Same
+// stale-result guard convention as loadTacticalBoard (GPT #233 HOLD
+// precedent) even though this only has one await, for consistency and in
+// case a future edit adds more.
+async function loadGlobalTacticalBoard() {
+  const seq = ++globalTacticalLoadSeq
+  const stale = () => seq !== globalTacticalLoadSeq
+  renderGlobalTacticalLoading()
+  let balls
+  try {
+    balls = await listGlobalPendingBalls()
+  } catch (err) {
+    if (!stale()) renderGlobalTacticalMessage(friendlyErrorMessage(err))
+    return
+  }
+  if (stale()) return
+
+  const queriedAt = new Date()
+  const allLanes = groupGlobalBalls(balls)
+
+  if (allLanes.length === 0) {
+    renderGlobalTacticalShell([
+      globalTacticalHeader({ withRefresh: true, queriedAt }),
+      el('p', { class: 'tactical-ball-summary', text: '✅ 全域目前沒有待處理項目' }),
+    ])
+    return
+  }
+
+  // §5.1/§七.5: constellation and list must agree on which lanes exist —
+  // both render from this one capped slice, not two independently-truncated
+  // views of the same data.
+  const lanes = allLanes.slice(0, GLOBAL_LANE_CAP)
+  const overflowCount = allLanes.length - lanes.length
+
+  renderGlobalTacticalShell([
+    globalTacticalHeader({ withRefresh: true, queriedAt }),
+    renderGlobalConstellation(lanes),
+    renderGlobalLaneList(lanes, overflowCount),
+  ])
+}
+
+async function syncGlobalTacticalFromHash() {
+  if (!currentSession || !globalTacticalPanelEl) return
+  if (!isGlobalTacticalHash()) {
+    closeGlobalTacticalPanel()
+    return
+  }
+  await loadGlobalTacticalBoard()
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && globalTacticalPanelEl && !globalTacticalPanelEl.classList.contains('hidden')) {
+    clearNoteHash()
+  }
+})
+
+onHashChange(syncGlobalTacticalFromHash)
 
 function renderDetailNote(note, { foundInList } = {}) {
   let editing = false
