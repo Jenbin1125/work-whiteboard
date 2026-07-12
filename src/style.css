@@ -145,6 +145,13 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 
 .empty-state { color: #777; font-size: 0.9rem; padding: 1rem 0; }
 
+/* id=475: exact-ID lookup — "not found"/"deleted"/"not in trash" are all
+   the same neutral empty-state treatment (never an error color, none of
+   these are failures); the tab-switch notice above a real result is
+   slightly more prominent since it's telling the user something changed. */
+.id-search-message { color: #777; font-size: 0.9rem; padding: 1rem 0; }
+.id-search-notice { color: #445; font-size: 0.82rem; background: #eef3f6; border-radius: 6px; padding: 0.45rem 0.7rem; margin: 0 0 0.5rem; }
+
 /* Inbox list (id=429): horizontal rows instead of a masonry card wall. */
 .wb-list {
   list-style: none;

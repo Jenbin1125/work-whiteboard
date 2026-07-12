@@ -1096,6 +1096,85 @@ function renderFilters(listMount) {
     refreshList(listMount)
   }
 
+  // id=475: exact-ID lookup — the search box's whole-input value is "純數字
+  // 或 #+數字" (never a partial match inside a longer string, so "id=344" or
+  // free text containing digits still falls through to the normal fuzzy
+  // search below, per §二's explicit non-triggering examples).
+  const ID_SEARCH_RE = /^#?\d+$/
+
+  // The search box itself IS the source of truth for "is this lookup still
+  // relevant" — covers every way it could go stale (清除全部, the box
+  // edited to a different id, or back out to fuzzy search) without needing
+  // a separate sequence counter kept in sync with every other filter action
+  // that also touches listMount (setStatus/applySort/tag clicks/trash toggle/…).
+  function idSearchStillActive(id) {
+    const raw = searchInput.value.trim()
+    const m = raw.match(ID_SEARCH_RE)
+    return !!m && Number(raw.replace('#', '')) === id
+  }
+
+  // §三: reuses getNoteById — the exact same single-precise-id query already
+  // used for deep links (id=427) — no new query logic. deleted_at is
+  // deliberately unfiltered by that function, so this can tell "deleted"
+  // apart from "never existed" (§三 items 3/4 need different messages).
+  async function runIdLookup(id) {
+    listMount.replaceChildren(el('p', { text: '載入中…' }))
+    let note
+    try {
+      note = await getNoteById(id)
+    } catch (err) {
+      if (idSearchStillActive(id)) listMount.replaceChildren(el('p', { class: 'error', text: friendlyErrorMessage(err) }))
+      return
+    }
+    if (!idSearchStillActive(id)) return
+    renderIdLookupResult(note, id)
+  }
+
+  function renderIdLookupResult(note, id) {
+    currentNotes = []
+    hasMoreNotes = false
+
+    if (!note) {
+      listMount.replaceChildren(el('p', { class: 'id-search-message', text: `找不到 note #${id}` }))
+      return
+    }
+
+    const isDeleted = !!note.deleted_at
+    // §三.3: found but soft-deleted — explicit message, never auto-switch
+    // into trash mode (trash is "刻意獨立的檢視模式"). Same independence
+    // principle applied symmetrically the other way too: searching from
+    // inside trash for a note that ISN'T deleted doesn't auto-exit trash
+    // either — id=475 is silent on this direction, but the stated rationale
+    // ("不應被搜尋行為意外帶入") reads as applying both ways, not just one.
+    if (filters.trash !== isDeleted) {
+      const text = isDeleted ? `note #${id} 已被刪除` : `note #${id} 不在垃圾桶內`
+      listMount.replaceChildren(el('p', { class: 'id-search-message', text }))
+      return
+    }
+
+    // §三.2: found, visible in this trash/non-trash view, but parked under a
+    // different status tab than the one currently active — switch tabs (the
+    // existing setStatus()/updateActive() machinery, not a new mechanism)
+    // and surface a short non-blocking notice. Only applies outside trash —
+    // trash isn't organized by status tabs the same way.
+    let notice = null
+    if (!filters.trash && filters.status && filters.status !== note.status) {
+      filters = { ...filters, status: note.status }
+      statusSelect.value = STATUS_TABS.includes(note.status) ? note.status : ''
+      if (statusTabsRef) statusTabsRef.updateActive()
+      notice = `已切換到「${statusLabel(note.status)}」顯示 #${id}`
+    }
+
+    currentNotes = [note]
+    listMount.replaceChildren(
+      ...(notice ? [el('p', { class: 'id-search-notice', text: notice })] : []),
+      renderList(currentNotes, listMount)
+    )
+    applyHighlight()
+  }
+
+  const debouncedIdLookup = debounce((id) => runIdLookup(id), 300)
+
   // Single source of truth for filters.status — keeps the <select>, the
   // quick-tabs' active state, and the active-filter chip all in sync
   // regardless of which one triggered the change.
@@ -1222,7 +1301,19 @@ function renderFilters(listMount) {
   }
 
   const debouncedApply = debounce(apply, 300)
-  searchInput.addEventListener('input', debouncedApply)
+  // id=475§二/§四: mutually exclusive with the fuzzy search below, decided
+  // fresh on every keystroke from the current input value alone — no
+  // separate "mode" flag needed, so clearing/editing back out of ID form
+  // naturally falls through to normal fuzzy search with zero extra logic.
+  searchInput.addEventListener('input', () => {
+    const raw = searchInput.value.trim()
+    const m = raw.match(ID_SEARCH_RE)
+    if (m) {
+      debouncedIdLookup(Number(raw.replace('#', '')))
+    } else {
+      debouncedApply()
+    }
+  })
   projectSelect.addEventListener('change', apply)
   statusSelect.addEventListener('change', () => setStatus(statusSelect.value))
   sourceSelect.addEventListener('change', apply)
