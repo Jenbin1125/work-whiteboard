@@ -62,6 +62,9 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .compose-more { margin: 0.5rem 0; border-top: 1px solid #eee; padding-top: 0.5rem; }
 .compose-more summary { font-size: 0.85rem; color: #555; cursor: pointer; }
 .compose-more .row { margin-top: 0.5rem; }
+/* id=476§二.2: low-key reminder that "更多分類" isn't actually empty while collapsed. */
+.more-summary-badge { font-size: 0.72rem; color: #a66; margin-left: 0.4rem; font-weight: 400; }
+.more-summary-badge.hidden { display: none; }
 
 /* id=435 §五.2/§七: 送出 stays right-aligned; 附加檔案 (id=431 §十一) sits in
    the same row, left-aligned — position (vertical order), trigger logic,

@@ -259,7 +259,7 @@ function renderNoteForm({ startOpen }) {
   const projectSelect = el('select', {}, PROJECT_KEYS.map((k) => option(k, projectLabel(k))))
   const sourceSelect = el('select', {}, SOURCE_TYPES.map((k) => option(k, sourceLabel(k))))
   const toSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
-  const tagEditor = buildTagChipEditor({ initialTags: [], onChange: () => persistDraft() })
+  const tagEditor = buildTagChipEditor({ initialTags: [], onChange: () => { persistDraft(); updateMoreSummaryBadge() } })
 
   // id=440 §一: which existing note (if any) this new note replies to. Not
   // persisted to the draft (unlike stagedFiles, this IS JSON-serializable,
@@ -321,6 +321,16 @@ function renderNoteForm({ startOpen }) {
   }
   ;[titleInput, contentInput].forEach((input) => input.addEventListener('input', persistDraft))
   ;[fromSelect, projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
+  // id=476§二.2: project/source/tags are the fields a draft can silently
+  // carry across a reload while "更多分類" stays collapsed (its default) —
+  // this keeps the summary itself honest about that instead of requiring
+  // the user to open it just to check. Defined here (used lower down, once
+  // moreDetails/moreSummaryBadge exist) but declared before the listeners
+  // that need to call it are wired up below.
+  function hasNonDefaultMoreFields() {
+    return projectSelect.value !== PROJECT_KEYS[0] || sourceSelect.value !== SOURCE_TYPES[0] || tagEditor.getTags().length > 0
+  }
+  ;[projectSelect, sourceSelect].forEach((sel) => sel.addEventListener('change', () => updateMoreSummaryBadge()))
 
   const status = el('p', { class: 'form-status' })
   // id=435 §六: text only ("新增" -> "送出"); §五.2: right-aligned (see the
@@ -406,11 +416,18 @@ function renderNoteForm({ startOpen }) {
       toSelect.value = ''
       tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
+      // id=476§二.1: project/source were the two classification fields NOT
+      // being reset here — Topic/Payload/標籤/收/回覆對象 already were —
+      // so a stale project/source could silently ride along into the next
+      // note if the user never opened "更多分類" to notice.
+      projectSelect.value = PROJECT_KEYS[0]
+      sourceSelect.value = SOURCE_TYPES[0]
       stagedFiles = []
       renderStagedFiles()
       stagedFilesError.classList.add('hidden')
       setReplyTarget(null)
       clearDraft()
+      updateMoreSummaryBadge()
       invalidateTagStats()
       // id=431 §十一.1: relay-upload now that a note id exists. A failed
       // file must never roll back the note or block the other files —
@@ -480,8 +497,16 @@ function renderNoteForm({ startOpen }) {
   const replyField = el('div', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replySearch.element])
   // "更多分類"'s own border-top already reads as the spec's divider line
   // above it — no separate <hr> needed.
-  const moreSummary = el('summary', { text: '更多分類' })
+  // id=476§二.2: badge is a separate span (not baked into the summary text)
+  // so it can be toggled independently of the "更多分類" label itself.
+  const moreSummaryBadge = el('span', { class: 'more-summary-badge hidden', text: '（含未清空的分類/標籤）' })
+  const moreSummary = el('summary', {}, [el('span', { text: '更多分類' }), moreSummaryBadge])
   const moreDetails = el('details', { class: 'compose-more' }, [moreSummary, moreFields, replyField])
+  // Only meaningful while collapsed — the fields are directly visible
+  // otherwise, so the reminder would be redundant.
+  function updateMoreSummaryBadge() {
+    moreSummaryBadge.classList.toggle('hidden', moreDetails.open || !hasNonDefaultMoreFields())
+  }
   // id=472§二: a field change inside "更多分類" must never close it — only
   // clicking the summary toggle should (現況 was a behavior defect, not a
   // design choice). Guards against the close regardless of cause: if the
@@ -497,7 +522,9 @@ function renderNoteForm({ startOpen }) {
   moreDetails.addEventListener('toggle', () => {
     if (!moreDetailsUserToggled && !moreDetails.open) moreDetails.open = true
     moreDetailsUserToggled = false
+    updateMoreSummaryBadge()
   })
+  updateMoreSummaryBadge()
 
   // id=435 §一.1/§四: Topic -> Payload -> 寄 -> 收 -> 送出(靠右) -> 更多分類.
   // This is an explicit Human-directed reversal of id=432 §四's
@@ -3537,7 +3564,17 @@ async function syncDetailFromHash() {
 
 onHashChange(syncDetailFromHash)
 
-onAuthChange((session) => {
+// id=476§一: root cause of "背景刷新中斷Compose輸入" — render() replaces the
+// entire board (app.replaceChildren()), including an open Compose form, and
+// this callback used to call it unconditionally on every auth event. But
+// supabase-js fires TOKEN_REFRESHED on its own on a timer to keep the JWT
+// fresh, with no user action at all — so a user mid-typing could have their
+// Payload textarea silently swapped out from under them for a same-user
+// token rotation that changes nothing visible. currentSession is still
+// updated for the lazy .user.id/.email reads elsewhere in this file; only
+// the render() (list/pagination/etc. rebuild) is skipped for this one event.
+onAuthChange((session, event) => {
   currentSession = session
+  if (event === 'TOKEN_REFRESHED') return
   render()
 })

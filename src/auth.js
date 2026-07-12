@@ -15,8 +15,12 @@ export async function signOut() {
   await supabase.auth.signOut()
 }
 
+// id=476§一: the event type is passed through (not just the session) so a
+// caller can tell a real sign-in/sign-out transition apart from
+// supabase-js's own silent background token rotation (TOKEN_REFRESHED),
+// which fires periodically with no user action at all.
 export function onAuthChange(callback) {
-  supabase.auth.getSession().then(({ data }) => callback(data.session))
-  const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => callback(session))
+  supabase.auth.getSession().then(({ data }) => callback(data.session, 'INITIAL_SESSION'))
+  const { data: sub } = supabase.auth.onAuthStateChange((event, session) => callback(session, event))
   return () => sub.subscription.unsubscribe()
 }
