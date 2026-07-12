@@ -734,7 +734,12 @@ function buildRecipientOptions() {
 // id=434 §七) — every render call here goes through it fresh rather than
 // keeping a separate per-editor-instance cache that could go stale after
 // another editor's write invalidates the shared one. -----------------------
-function buildTagChipEditor({ initialTags = [], onChange } = {}) {
+// id=482§一: showRecent lets a caller suppress the editor's own "最近使用"
+// quick-list — the filter popover merges it into 常用標籤 instead (see
+// buildCommonTagsBlock), so showing both there would be the exact
+// duplication the spec is removing. Compose/detail-edit callers are
+// unaffected (default true, unchanged behavior).
+function buildTagChipEditor({ initialTags = [], onChange, showRecent = true } = {}) {
   let tags = [...initialTags]
   // { tag, count?, raw?, isNew } — the currently rendered suggestion list,
   // in display order, so keyboard nav can index into it directly.
@@ -933,7 +938,7 @@ function buildTagChipEditor({ initialTags = [], onChange } = {}) {
   input.addEventListener('click', (e) => e.stopPropagation())
 
   renderChips()
-  renderRecent()
+  if (showRecent) renderRecent()
 
   const wrap = el('div', { class: 'tag-chip-editor' }, [row, dupHint, limitHint, suggestionsEl, recentEl])
 
@@ -949,16 +954,36 @@ function buildTagChipEditor({ initialTags = [], onChange } = {}) {
 
 // id=433 §〇/§七: the same mental-model + interaction hint copy, verbatim,
 // wherever the tag editor appears in an editable (non-filter) context.
+// id=482§四: was two overlapping field-hint paragraphs (same "跨專案尋找主題"
+// point stated twice) — merged into one, keeping every distinct piece of
+// information from both (purpose, examples, Enter key, no #, not
+// recipient/status).
 function tagField(tagEditor, { label = '標籤（選填）' } = {}) {
   return el('div', { class: 'field-label field-label-compact tag-field' }, [
     el('span', { text: label }),
     tagEditor.element,
-    el('p', { class: 'field-hint', text: '標籤用來跨專案尋找相同主題，例如 NEC、RLS、Storage；不代表收件人或處理狀態。' }),
-    el('p', { class: 'field-hint', text: '用來跨專案尋找主題。輸入後按 Enter，例如 NEC、Level3、Storage；不需輸入 #。' }),
+    el('p', {
+      class: 'field-hint',
+      text: '標籤用來跨專案尋找相同主題，例如 NEC、RLS、Storage；輸入後按 Enter，不需輸入 #；不代表收件人或處理狀態。',
+    }),
   ])
 }
 
+// id=482§一: "上次使用：X天前" hover text — pure display, no new stats
+// source (getTagStats() already carries lastUsed for the recent-list this
+// merge is replacing).
+function lastUsedLabel(iso) {
+  if (!iso) return '尚無使用紀錄'
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+  if (days <= 0) return '上次使用：今天'
+  return `上次使用：${days} 天前`
+}
+
 // 常用標籤 quick-access block (id=433 §五), used inside the filter popover.
+// id=482§一: this is now the FILTER POPOVER'S ONLY tag quick-list — the tag
+// editor's own "最近使用" list is suppressed there (showRecent: false) so
+// the two previously-separate lists don't duplicate each other. Sort stays
+// count-based (frequency), per the spec; lastUsed is surfaced via hover only.
 function buildCommonTagsBlock({ onSelect }) {
   const listEl = el('ul', { class: 'common-tags-list' })
   const wrap = el('div', { class: 'common-tags-block' }, [el('div', { class: 'common-tags-title', text: '常用標籤' }), listEl])
@@ -979,6 +1004,7 @@ function buildCommonTagsBlock({ onSelect }) {
           {
             type: 'button',
             class: 'common-tag-btn',
+            title: lastUsedLabel(s.lastUsed),
             onclick: (e) => {
               e.stopPropagation()
               onSelect(s.tag)
@@ -1101,6 +1127,7 @@ function renderFilters(listMount) {
 
   const tagFilterEditor = buildTagChipEditor({
     initialTags: [],
+    showRecent: false,
     onChange: (tags) => {
       filters = { ...filters, tags }
       renderChips()
@@ -1532,7 +1559,9 @@ function renderRow(note, mount) {
   // relevance at a glance. Non-🏈 notes, and 🏈 notes where extraction
   // fails, keep the exact prior fallback (id=438 §一.2 優雅降級).
   const topicText = extractFootballPreview(note.content) || noteTitleOrExcerpt(note)
-  const topicEl = el('span', { class: 'wb-topic', text: topicText })
+  const hintDot = taskTypeHintDot(note)
+  const topicTextEl = el('span', { text: topicText })
+  const topicEl = el('span', { class: 'wb-topic' }, hintDot ? [hintDot, topicTextEl] : [topicTextEl])
   // id=435 §四.1: reverts §三.3 — tags go back to their own line below
   // Topic (Human found the shared-line width too cramped in practice).
   const topicBlock = el('div', { class: 'wb-row-topic-block' }, [topicEl, buildRowTagChips(note)])
@@ -2709,6 +2738,24 @@ function taskTypeHint(note) {
   return 'unknown'
 }
 
+// id=482§三: small color dot before a row's card topic, reusing
+// taskTypeHint() verbatim — same dictionary as the tactical board's badge,
+// no second classification system. 'unknown' renders nothing: it carries no
+// real signal, and every single row would otherwise show a dot for it.
+const TASK_TYPE_HINT_COLORS = {
+  待審查: '#2563eb',
+  待驗證: '#7c3aed',
+  待實作: '#0d9488',
+  可能可收束: '#16a34a',
+  需指定接球者: '#ca8a04',
+}
+function taskTypeHintDot(note) {
+  const hint = taskTypeHint(note)
+  const color = TASK_TYPE_HINT_COLORS[hint]
+  if (!color) return null
+  return el('span', { class: 'task-type-dot', style: `background:${color}`, title: hint, 'aria-label': hint })
+}
+
 // id=450§九.5: "目前查看" (isCurrent, dark outline) and "待處理球" (isBall,
 // amber left border) are visually distinct and can independently apply to
 // the same node — see the legend rendered alongside the ball summary.
@@ -3117,9 +3164,16 @@ function renderGlobalConstellation(lanes) {
   const maxCount = Math.max(1, ...lanes.map((l) => l.balls.length))
   const MIN_SIZE = 28
   const MAX_SIZE = 64
+  // id=482§二: was a plain linear ratio, which left low-count lanes too
+  // close in size to high-count ones to read at a glance. Raising the ratio
+  // to a power > 1 pushes low counts further toward MIN_SIZE while leaving
+  // the max-count lane unchanged (ratio 1 → 1 regardless of exponent) — a
+  // steeper curve, still pure geometry, no color/severity added.
+  const SCALE_EXPONENT = 1.8
   const ordered = [...lanes].sort((a, b) => b.balls.length - a.balls.length)
   const nodes = ordered.map((lane) => {
-    const size = Math.round(MIN_SIZE + (lane.balls.length / maxCount) * (MAX_SIZE - MIN_SIZE))
+    const ratio = Math.pow(lane.balls.length / maxCount, SCALE_EXPONENT)
+    const size = Math.round(MIN_SIZE + ratio * (MAX_SIZE - MIN_SIZE))
     const node = el('button', {
       type: 'button',
       class: 'global-constellation-node',

@@ -213,6 +213,9 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* id=482§三: task-type dot — inline, doesn't affect the ellipsis truncation
+   of the text span next to it. */
+.task-type-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.4rem; flex: none; vertical-align: middle; }
 .wb-time { color: #777; font-size: 0.75rem; white-space: nowrap; margin-left: auto; }
 
 @media (max-width: 640px) {
