@@ -24,6 +24,7 @@ import {
   listGlobalPendingBalls,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
+import { loadSortPref, saveSortPref } from './sortPref.js'
 import {
   getNoteIdFromHash,
   navigateToNote,
@@ -85,7 +86,10 @@ function debounce(fn, ms) {
 }
 
 let currentSession = null
-let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: undefined }
+// id=445§⑤: sort is seeded from sessionStorage so it survives an F5 reload
+// (a plain module-level default here would reset every reload — the module
+// itself re-executes from scratch on a full page reload).
+let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: loadSortPref() }
 let activeNoteId = null
 let detailPanelEl = null
 let tacticalPanelEl = null
@@ -1199,12 +1203,15 @@ function renderFilters(listMount) {
     const val = sortSelect.value
     if (val === 'oldest_raw') {
       filters = { ...filters, sort: 'created_asc' }
+      saveSortPref('created_asc')
       setStatus('raw')
       return
     } else if (val === 'created_desc') {
       filters = { ...filters, sort: 'created_desc' }
+      saveSortPref('created_desc')
     } else {
       filters = { ...filters, sort: undefined }
+      saveSortPref(undefined)
     }
     renderChips()
     refreshList(listMount)
