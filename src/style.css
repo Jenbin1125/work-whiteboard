@@ -861,6 +861,9 @@ body.body-scroll-locked { overflow: hidden; }
 .tactical-node-badge { background: #f1f5f9; color: #475569; border-radius: 4px; padding: 0.05rem 0.4rem; font-size: 0.7rem; }
 .tactical-node-recipient { font-size: 0.8rem; color: #445; }
 .tactical-node-title { font-weight: 600; font-size: 0.88rem; }
+/* id=472§六: same low-key, non-alarming treatment as .flow-node-hint —
+   purely a reference hint, never a status/warning signal. */
+.tactical-node-hint { margin: 0.15rem 0 0; font-size: 0.7rem; color: #999; font-style: italic; }
 .tactical-gray { border-left: 4px solid #cbd5e1; }
 .tactical-amber { border-left: 4px solid #d97706; background: #fffbeb; }
 .tactical-current { cursor: default; outline: 2px solid #334155; outline-offset: 1px; }
@@ -1010,6 +1013,10 @@ body.body-scroll-locked { overflow: hidden; }
 }
 .reply-search-results li button:hover { background: #f2f4f6; }
 .reply-search-empty { padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #888; }
+/* id=472§一: inline confirmation right in the field itself, alongside the
+   existing top-of-form banner (.reply-target-chip) — not a replacement. */
+.reply-search-confirm { margin: 0.25rem 0 0; font-size: 0.78rem; color: #338a5c; }
+.reply-search-confirm.hidden { display: none; }
 
 /* Toast: single reused element, so rapid clicks can never stack up more than
    one. Optional action button (5s trash-undo, "開啟詳情" after create). */

@@ -97,6 +97,11 @@ let copyInFlight = false
 // chips (id=433 §三.2) push a tag into the filter state + popover editor
 // without threading the filter closures through renderRow's call chain.
 let addTagFilterFn = null
+// id=472§四: row-level tag chips REPLACE the existing filters (not merge —
+// see addTagFilterFn above, still used by the filter popover's own 常用標籤
+// quick list, where "add to the combo I'm building" is still the right
+// mental model). Same lazy-binding pattern.
+let replaceFilterWithTagFn = null
 // Same lazy-binding pattern as addTagFilterFn, but for the id=434 §五 status
 // quick-tabs <-> filter popover's status <select> staying in sync regardless
 // of which one triggered the change.
@@ -258,9 +263,16 @@ function renderNoteForm({ startOpen }) {
   // more likely confuse than help — same reasoning as stagedFiles staying
   // in-memory-only, just for a different underlying reason).
   let replyTarget = null // { id, label } | null
+  // id=472§一: single point that keeps the top banner (replyChip) and the
+  // inline in-field confirmation (replySearch.renderConfirm) in sync — see
+  // buildReplySearchField's comment for why both need to show it.
+  function setReplyTarget(target) {
+    replyTarget = target
+    replyChip.render(target)
+    replySearch.renderConfirm(target)
+  }
   const replyChip = buildReplyChip(() => {
-    replyTarget = null
-    replyChip.render(null)
+    setReplyTarget(null)
     // id=440 §四 (Scribe #142 定案): cancelling a reply must reset 寄/收
     // back to their normal defaults too — leaving 收 on the auto-filled
     // value (or 寄 on whatever it happened to be) after the banner
@@ -275,10 +287,7 @@ function renderNoteForm({ startOpen }) {
     persistDraft()
   })
   const replySearch = buildReplySearchField({
-    onSelect: (n) => {
-      replyTarget = { id: n.id, label: noteTitleOrExcerpt(n) }
-      replyChip.render(replyTarget)
-    },
+    onSelect: (n) => setReplyTarget({ id: n.id, label: noteTitleOrExcerpt(n) }),
   })
 
   // Restore an in-progress draft (reload / navigate away and back).
@@ -396,8 +405,7 @@ function renderNoteForm({ startOpen }) {
       stagedFiles = []
       renderStagedFiles()
       stagedFilesError.classList.add('hidden')
-      replyTarget = null
-      replyChip.render(null)
+      setReplyTarget(null)
       clearDraft()
       invalidateTagStats()
       // id=431 §十一.1: relay-upload now that a note id exists. A failed
@@ -455,10 +463,37 @@ function renderNoteForm({ startOpen }) {
   // in "更多分類" since the primary entry is a row/detail "回覆" button
   // (see startReply() below). No excludeId: a brand-new note has no id of
   // its own yet, so there's nothing to self-exclude.
-  const replyField = el('label', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replySearch])
+  // id=472§一 (bug found via regression test on the detail edit form's
+  // equivalent field, fixed here too for consistency/safety): a <label>
+  // wrapping more than one interactive descendant triggers the browser's
+  // implicit label-activation behavior — clicking any labelable descendant
+  // (a search-result <button>, say) also synthesizes a click on the FIRST
+  // labelable descendant in tree order. Harmless today (this field's only
+  // labelable descendants are the search results themselves), but the plain
+  // .field-label CSS class doesn't require the <label> tag, so using <div>
+  // here removes the whole risk class rather than relying on today's
+  // specific content staying accident-free.
+  const replyField = el('div', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replySearch.element])
   // "更多分類"'s own border-top already reads as the spec's divider line
   // above it — no separate <hr> needed.
-  const moreDetails = el('details', { class: 'compose-more' }, [el('summary', { text: '更多分類' }), moreFields, replyField])
+  const moreSummary = el('summary', { text: '更多分類' })
+  const moreDetails = el('details', { class: 'compose-more' }, [moreSummary, moreFields, replyField])
+  // id=472§二: a field change inside "更多分類" must never close it — only
+  // clicking the summary toggle should (現況 was a behavior defect, not a
+  // design choice). Guards against the close regardless of cause: if the
+  // <details> closes without moreSummary's own click handler having run
+  // first, it wasn't the user deliberately collapsing it, so force it back
+  // open. A real user click IS still honored in both directions (open→close
+  // and close→open) since the flag is set before the browser's native
+  // toggle fires for that same click.
+  let moreDetailsUserToggled = false
+  moreSummary.addEventListener('click', () => {
+    moreDetailsUserToggled = true
+  })
+  moreDetails.addEventListener('toggle', () => {
+    if (!moreDetailsUserToggled && !moreDetails.open) moreDetails.open = true
+    moreDetailsUserToggled = false
+  })
 
   // id=435 §一.1/§四: Topic -> Payload -> 寄 -> 收 -> 送出(靠右) -> 更多分類.
   // This is an explicit Human-directed reversal of id=432 §四's
@@ -500,8 +535,7 @@ function renderNoteForm({ startOpen }) {
   // change somewhere off-screen (relevant on mobile, where Compose starts
   // collapsed and the list can be scrolled well past it).
   function startReply(note) {
-    replyTarget = { id: note.id, label: noteTitleOrExcerpt(note) }
-    replyChip.render(replyTarget)
+    setReplyTarget({ id: note.id, label: noteTitleOrExcerpt(note) })
     // id=440 §四 (Scribe #142 定案, superseding UI-Claude's original
     // email-reply assumption): 寄 is deliberately NEVER touched here — it
     // was never auto-swapped to begin with, and Scribe's argument (this
@@ -537,9 +571,25 @@ function labeledField(labelText, control) {
 // This is a plain click-to-select list, not a full ARIA combobox like the
 // tag editor's (id=434 §二) — arrow-key roving wasn't in id=440's
 // acceptance checklist, so it's out of scope for this pass.
+// id=472§一: returns {element, renderConfirm} — renderConfirm(target) shows
+// "已選擇：#id 標題前20字" IN THIS FIELD, so the confirmation is visible
+// wherever the user's eyes already are, not only in the top-of-form banner
+// (buildReplyChip below) they might have scrolled past. The two are meant
+// to coexist, not replace each other — the caller renders both.
 function buildReplySearchField({ excludeId, onSelect } = {}) {
   const searchInput = el('input', { type: 'text', placeholder: '搜尋標題或 id…', 'aria-label': '搜尋回覆對象' })
   const resultsEl = el('ul', { class: 'reply-search-results hidden' })
+  const confirmEl = el('p', { class: 'reply-search-confirm hidden' })
+
+  function renderConfirm(target) {
+    if (!target) {
+      confirmEl.classList.add('hidden')
+      confirmEl.textContent = ''
+      return
+    }
+    confirmEl.classList.remove('hidden')
+    confirmEl.textContent = `已選擇：#${target.id} ${truncateForNode(target.label, 20)}`
+  }
 
   const closeResults = () => {
     resultsEl.classList.add('hidden')
@@ -582,7 +632,7 @@ function buildReplySearchField({ excludeId, onSelect } = {}) {
     }
   })
 
-  return el('div', { class: 'reply-search-field' }, [searchInput, resultsEl])
+  return { element: el('div', { class: 'reply-search-field' }, [searchInput, resultsEl, confirmEl]), renderConfirm }
 }
 
 // id=440: shared reply-target chip — shows what a note (new or existing)
@@ -979,12 +1029,19 @@ function renderFilters(listMount) {
   })
 
   const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, projectLabel(k)))])
-  const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUSES.map((k) => option(k, statusLabel(k)))])
+  // id=472§三: aligned with the 4-tab STATUS_TABS set (adds 已萃取), not the
+  // 3-value STATUSES a human can manually assign when creating/editing a
+  // note — this is a read-only filter, so extracted is a valid thing to
+  // filter BY even though it can't be set from this UI (id=432 §三 item 2).
+  const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUS_TABS.map((k) => option(k, statusLabel(k)))])
   const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
   const fromInput = el('input', { type: 'text', placeholder: '寄件篩選' })
   const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
   const sortSelect = el('select', {}, [option('updated_desc', '最近更新'), option('created_desc', '最新建立'), option('oldest_raw', '最舊待整理')])
-  sortSelect.value = 'updated_desc'
+  // id=472§五.1: initialize from the module-level filters.sort (which
+  // clearAllFilters no longer touches) rather than hardcoding the default —
+  // defensive correctness if renderFilters() is ever invoked again mid-session.
+  sortSelect.value = filters.sort === 'created_desc' ? 'created_desc' : filters.sort === 'created_asc' ? 'oldest_raw' : 'updated_desc'
 
   const tagFilterEditor = buildTagChipEditor({
     initialTags: [],
@@ -1044,7 +1101,10 @@ function renderFilters(listMount) {
   // regardless of which one triggered the change.
   function setStatus(status) {
     filters = { ...filters, status }
-    statusSelect.value = STATUSES.includes(status) ? status : ''
+    // id=472§三: statusSelect now has all 4 STATUS_TABS options (extracted
+    // included), so it can mirror the quick-tabs bidirectionally instead of
+    // falling back to '' whenever the tabs pick extracted.
+    statusSelect.value = STATUS_TABS.includes(status) ? status : ''
     renderChips()
     refreshList(listMount)
     if (statusTabsRef) statusTabsRef.updateActive()
@@ -1071,15 +1131,17 @@ function renderFilters(listMount) {
     refreshList(listMount)
   }
 
+  // id=472§五.1: 排序 is deliberately untouched here — it's an independent
+  // user preference, not a content filter, so "清除全部" no longer silently
+  // resets sortSelect/filters.sort back to the default.
   function clearAllFilters() {
     searchInput.value = ''
     projectSelect.value = ''
     sourceSelect.value = ''
     fromInput.value = ''
     toSelect.value = ''
-    sortSelect.value = 'updated_desc'
     tagFilterEditor.setTags([])
-    filters = { ...filters, tags: [], sort: undefined, status: '' }
+    filters = { ...filters, tags: [], status: '' }
     statusSelect.value = ''
     apply()
     if (statusTabsRef) statusTabsRef.updateActive()
@@ -1090,9 +1152,11 @@ function renderFilters(listMount) {
     apply()
   }
 
-  // Shared by the popover's own chip editor and row-level tag-chip clicks
-  // (id=433 §三.2) — both must keep filters.tags, the editor's own chips,
-  // and the active-filter chips row in sync.
+  // id=472§四: row-level tag-chip clicks used to call this too (id=433
+  // §三.2's original "疊加" behavior) — now only the popover's own chip
+  // editor and 常用標籤 quick list use it, where "add to the combo I'm
+  // building" is still the right mental model. See replaceFiltersWithTag
+  // below for the row-chip click's new "取代" behavior.
   function addTagToFilter(tag) {
     if (filters.tags.includes(tag)) return
     const next = [...filters.tags, tag]
@@ -1100,6 +1164,25 @@ function renderFilters(listMount) {
     tagFilterEditor.setTags(next)
     renderChips()
     refreshList(listMount)
+  }
+
+  // id=472§四: clicking a tag ON A NOTE (not the popover's own tag editor)
+  // now replaces every other filter — the intuitive mental model is "show me
+  // everything with this tag", not "AND this tag onto whatever I already had
+  // set". Sort is deliberately left untouched, same reasoning as §五: it's
+  // an independent user preference, not a content filter.
+  function replaceFiltersWithTag(tag) {
+    searchInput.value = ''
+    projectSelect.value = ''
+    statusSelect.value = ''
+    sourceSelect.value = ''
+    fromInput.value = ''
+    toSelect.value = ''
+    tagFilterEditor.setTags([tag])
+    filters = { ...filters, projectKey: '', status: '', source: '', from: '', to: '', search: '', tags: [tag] }
+    renderChips()
+    refreshList(listMount)
+    if (statusTabsRef) statusTabsRef.updateActive()
   }
 
   function removeTagFromFilter(tag) {
@@ -1111,6 +1194,7 @@ function renderFilters(listMount) {
   }
 
   addTagFilterFn = addTagToFilter
+  replaceFilterWithTagFn = replaceFiltersWithTag
 
   // id=434 §五: lets the status quick-tabs (built alongside renderFilters in
   // renderBoard) drive the same filters.status the popover's <select> does —
@@ -1244,7 +1328,9 @@ function buildRowTagChips(note) {
       text: '#' + displayTag(t),
       onclick: (e) => {
         e.stopPropagation()
-        if (addTagFilterFn) addTagFilterFn(t)
+        // id=472§四: replaces existing filters (取代), not add-on-top —
+        // see replaceFiltersWithTag in renderFilters for the rationale.
+        if (replaceFilterWithTagFn) replaceFilterWithTagFn(t)
       },
     })
   )
@@ -1301,7 +1387,7 @@ function renderRow(note, mount) {
   // Topic (Human found the shared-line width too cramped in practice).
   const topicBlock = el('div', { class: 'wb-row-topic-block' }, [topicEl, buildRowTagChips(note)])
 
-  const timeEl = el('span', { class: 'wb-time', text: new Date(note.created_at).toLocaleString() })
+  const timeEl = el('span', { class: 'wb-time', text: formatCardTimestamp(note) })
 
   const rowActions = buildRowActionIcons(note)
 
@@ -1341,6 +1427,21 @@ function renderRow(note, mount) {
   if (isExpanded && attachments) attachments.load()
 
   return el('li', { class: 'wb-row', 'data-note-id': String(note.id) }, [rowMain, expandSection])
+}
+
+// id=472§五.2: the row's single primary timestamp now tracks whichever
+// basis is actually driving the current sort order — module-level `filters`
+// is already the single source of truth the list itself queries against
+// (whiteboard.js's listNotes), so reading filters.sort here can't drift out
+// of sync with what's actually on screen. Scoped to this one row-level
+// timestamp only (not formatTimeMeta below, used in the expanded row detail
+// and the detail panel — neither is part of a sorted list, so basis-matching
+// doesn't apply there the same way).
+function formatCardTimestamp(note) {
+  if (filters.sort === 'created_desc' || filters.sort === 'created_asc') {
+    return new Date(note.created_at).toLocaleString()
+  }
+  return new Date(note.updated_at || note.created_at).toLocaleString()
 }
 
 function formatTimeMeta(note) {
@@ -2146,7 +2247,7 @@ function recipientOrUnassigned(note) {
 // note, and direct children. buildIconAction's own click handler already
 // calls stopPropagation before running onActivate, so the copy button never
 // also triggers the node's own navigate-on-click.
-function buildFlowNode(note, { color, isCurrent, hint } = {}) {
+function buildFlowNode(note, { color, isCurrent, hints } = {}) {
   const copyBtn = buildIconAction({
     icon: iconLink(),
     label: '複製引用',
@@ -2170,10 +2271,11 @@ function buildFlowNode(note, { color, isCurrent, hint } = {}) {
       el('span', { class: 'flow-node-time', text: new Date(note.created_at).toLocaleString() }),
     ]),
   ]
-  // §7.2's muted "deeper replies exist" note belongs inside the body so it
-  // stacks under line1/line2 — appending it as a sibling of body/copyBtn
-  // would make it a 3rd item in the node's flex row instead.
-  if (hint) bodyChildren.push(el('p', { class: 'flow-node-hint', text: hint }))
+  // §7.2's muted "deeper replies exist" note (and, per id=472§六, the
+  // "疑似與 id=XXX 相關" cross-reference hint) belong inside the body so
+  // they stack under line1/line2 — appending as a sibling of body/copyBtn
+  // would make each a separate item in the node's flex row instead.
+  ;(hints || []).filter(Boolean).forEach((h) => bodyChildren.push(el('p', { class: 'flow-node-hint', text: h })))
   const body = el('div', { class: 'flow-node-body' }, bodyChildren)
   const classes = ['flow-node', 'flow-node-' + (color || 'gray')]
   if (isCurrent) classes.push('flow-node-current')
@@ -2297,13 +2399,17 @@ async function loadReplyContext(note, container) {
     const childrenEl = el('div', { class: 'flow-children' }, [
       el('p', { class: 'flow-children-heading', text: `此 note 有 ${directChildren.length} 則後續回覆` }),
     ])
-    directChildren.forEach((child) => {
+    directChildren.forEach((child, i) => {
       const hasMore = (childrenOf.get(child.id) || []).length > 0
       // §7.2: a direct child's own further replies stay collapsed here — a
       // muted, non-interactive note instead of a dead link, since P1's
       // task-tree modal (where this would actually go) doesn't exist yet.
-      const hint = hasMore ? '此分支還有更深層回覆（任務樹功能開發中）' : null
-      childrenEl.appendChild(buildFlowNode(child, { color: flowColor(child, childrenOf), hint }))
+      const hints = [hasMore ? '此分支還有更深層回覆（任務樹功能開發中）' : null]
+      // id=472§六: same sibling-branch cross-reference hint as the tactical
+      // board's branches column — pure string comparison, no new query.
+      const sharedId = findSharedCrossRef(directChildren, i)
+      if (sharedId != null) hints.push(`疑似與 id=${sharedId} 相關`)
+      childrenEl.appendChild(buildFlowNode(child, { color: flowColor(child, childrenOf), hints }))
     })
     sections.push(childrenEl)
   }
@@ -2406,6 +2512,36 @@ function renderTacticalMessage(noteId, text) {
   ])
 }
 
+// id=472§六: pure string/regex comparison across SIBLING branches — extends
+// the exact same "keyword hint, not AI judgment" approach as task_type_hint
+// (id=452), reusing the `content` column listReplies() already returns (no
+// new query). Only ever compares branches against EACH OTHER, never against
+// the current/parent note, so it can't fire on a self-reference.
+const CROSS_REF_RE = /(?:id=|#)(\d+)/g
+function extractCrossRefIds(text) {
+  const ids = new Set()
+  const re = new RegExp(CROSS_REF_RE)
+  let m
+  while ((m = re.exec(text || ''))) ids.add(Number(m[1]))
+  return ids
+}
+
+// Returns the first shared "id=N"/"#N" reference found between `branches[index]`
+// and any OTHER branch in the same array, or null if none. O(n²) over
+// sibling counts, which are always small (direct replies to one note).
+function findSharedCrossRef(branches, index) {
+  const mine = extractCrossRefIds((branches[index].title || '') + ' ' + (branches[index].content || ''))
+  if (!mine.size) return null
+  for (let j = 0; j < branches.length; j++) {
+    if (j === index) continue
+    const theirs = extractCrossRefIds((branches[j].title || '') + ' ' + (branches[j].content || ''))
+    for (const id of mine) {
+      if (theirs.has(id)) return id
+    }
+  }
+  return null
+}
+
 // id=296 (甲-lite) §②③: exact same CASE WHEN order as id=452 §二's SQL
 // heuristic — title-based rules take priority over the recipient-IS-NULL
 // check, and this is the ONE dictionary (id=452's 待審查/待驗證/待實作/可能
@@ -2426,7 +2562,7 @@ function taskTypeHint(note) {
 // id=450§九.5: "目前查看" (isCurrent, dark outline) and "待處理球" (isBall,
 // amber left border) are visually distinct and can independently apply to
 // the same node — see the legend rendered alongside the ball summary.
-function tacticalNode(note, { isCurrent, isBall } = {}) {
+function tacticalNode(note, { isCurrent, isBall, relatedHint } = {}) {
   const classes = ['tactical-node', isBall ? 'tactical-amber' : 'tactical-gray']
   if (isCurrent) classes.push('tactical-current')
   // id=296 §①: data-recipient carries the raw canonical value (empty string
@@ -2437,7 +2573,7 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
     props.role = 'button'
     props.tabindex = '0'
   }
-  const node = el('div', props, [
+  const bodyChildren = [
     el('div', { class: 'tactical-node-line1' }, [
       el('span', { class: 'tactical-node-id', text: '#' + note.id }),
       el('span', { class: 'tactical-node-status', text: statusLabel(note.status) }),
@@ -2447,7 +2583,11 @@ function tacticalNode(note, { isCurrent, isBall } = {}) {
     // cross-referencing the text summary above.
     el('div', { class: 'tactical-node-recipient', text: note.recipient ? '收：' + recipientLabel(note.recipient) : '尚未指定收件人' }),
     el('div', { class: 'tactical-node-title', text: truncateForNode(noteTitleOrExcerpt(note)) }),
-  ])
+  ]
+  // id=472§六: low-key reference hint, purely from string comparison against
+  // sibling branches — never affects sort/filter/color, just an extra line.
+  if (relatedHint) bodyChildren.push(el('div', { class: 'tactical-node-hint', text: relatedHint }))
+  const node = el('div', props, bodyChildren)
   if (!isCurrent) {
     node.addEventListener('click', () => navigateToNote(note.id))
     node.addEventListener('keydown', (e) => {
@@ -2594,7 +2734,12 @@ async function loadTacticalBoard(noteId) {
   currentStep.appendChild(tacticalNode(note, { isCurrent: true, isBall: pendingIds.has(note.id) }))
 
   const branchesCol = el('div', { class: 'tactical-branches' })
-  directChildren.forEach((child) => branchesCol.appendChild(tacticalNode(child, { isBall: pendingIds.has(child.id) })))
+  directChildren.forEach((child, i) => {
+    const sharedId = findSharedCrossRef(directChildren, i)
+    branchesCol.appendChild(
+      tacticalNode(child, { isBall: pendingIds.has(child.id), relatedHint: sharedId != null ? `疑似與 id=${sharedId} 相關` : null })
+    )
+  })
 
   // §九.4: faint column labels give the horizontal layout its "tactics
   // board" spatial meaning instead of reading as a plain card row. A column
@@ -3145,31 +3290,35 @@ function renderDetailNote(note, { foundInList } = {}) {
     // if unfriendly, identifier while the real title loads), then swaps in
     // the resolved title once the async lookup returns.
     let replyTarget = note.reply_to_note_id ? { id: note.reply_to_note_id, label: '#' + note.reply_to_note_id } : null
+    // id=472§一: same shared-sync pattern as Compose's setReplyTarget.
+    function setReplyTarget(target) {
+      replyTarget = target
+      replyChip.render(target)
+      replySearch.renderConfirm(target)
+    }
     const replyChip = buildReplyChip(() => {
-      replyTarget = null
-      replyChip.render(null)
+      setReplyTarget(null)
       scheduleSave()
     })
     replyChip.render(replyTarget)
+    const replySearch = buildReplySearchField({
+      excludeId: note.id,
+      onSelect: (n) => {
+        setReplyTarget({ id: n.id, label: noteTitleOrExcerpt(n) })
+        scheduleSave()
+      },
+    })
+    replySearch.renderConfirm(replyTarget)
     if (replyTarget) {
       const targetId = replyTarget.id
       getNoteById(targetId)
         .then((n) => {
           if (n && replyTarget && replyTarget.id === targetId) {
-            replyTarget = { id: n.id, label: noteTitleOrExcerpt(n) }
-            replyChip.render(replyTarget)
+            setReplyTarget({ id: n.id, label: noteTitleOrExcerpt(n) })
           }
         })
         .catch(() => {})
     }
-    const replySearch = buildReplySearchField({
-      excludeId: note.id,
-      onSelect: (n) => {
-        replyTarget = { id: n.id, label: noteTitleOrExcerpt(n) }
-        replyChip.render(replyTarget)
-        scheduleSave()
-      },
-    })
 
     const saveStatusEl = el('span', { class: 'save-status' })
     let saveTimer = null
@@ -3220,7 +3369,16 @@ function renderDetailNote(note, { foundInList } = {}) {
       el('label', { class: 'field-label' }, [el('span', { text: '來源' }), sourceSelect]),
       el('label', { class: 'field-label' }, [el('span', { text: '收' }), recipientSelect]),
       tagField(tagEditor, { label: '標籤' }),
-      el('label', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replyChip.element, replySearch]),
+      // id=472§一 bugfix: this was a <label> wrapping BOTH replyChip.element
+      // (whose × button is the first labelable descendant) AND
+      // replySearch.element's own result buttons — clicking a search result
+      // to SELECT a reply target also synthesized a click on the chip's ×
+      // clear button (native <label> implicit-activation behavior), so a
+      // freshly-selected target self-cancelled immediately. Caught by this
+      // ticket's own regression test, not previously covered by any
+      // acceptance checklist. <div> carries the identical .field-label
+      // styling without the hazard.
+      el('div', { class: 'field-label' }, [el('span', { text: '回覆對象（選填）' }), replyChip.element, replySearch.element]),
       saveStatusEl,
     ])
   }
