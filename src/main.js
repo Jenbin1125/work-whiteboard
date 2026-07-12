@@ -398,6 +398,7 @@ function renderNoteForm({ startOpen }) {
     }
     const tags = tagEditor.getTags()
     const filesToUpload = stagedFiles
+    const replyToNoteId = replyTarget ? replyTarget.id : null
 
     submitBtn.disabled = true
     try {
@@ -409,7 +410,7 @@ function renderNoteForm({ startOpen }) {
         recipient: toSelect.value,
         createdByLabel: fromSelect.value,
         tags,
-        replyToNoteId: replyTarget ? replyTarget.id : null,
+        replyToNoteId,
       })
       titleInput.value = ''
       contentInput.value = ''
@@ -441,6 +442,30 @@ function renderNoteForm({ startOpen }) {
         onAction: () => navigateToNote(newNote.id),
         duration: 4000,
       })
+      // id=491 (from #489's incident): createNote()'s own .select().single()
+      // already reads back the committed row, so newNote.reply_to_note_id
+      // here is DB truth, not just an echo of what we asked for — a real
+      // verification, not a redundant round-trip. The underlying cause of
+      // the intermittent loss is still unconfirmed (id=470/§483/§490's
+      // investigation found no reproducible trigger despite extensive
+      // testing), so this is a safety net, not a fix: turn a silent failure
+      // into either a self-healed one retry or a visible, actionable warning
+      // instead of the user having to notice on their own via the detail
+      // panel later.
+      if (replyToNoteId !== null && newNote.reply_to_note_id !== replyToNoteId) {
+        updateNote(newNote.id, { replyToNoteId })
+          .then(() => getNoteById(newNote.id))
+          .then((rechecked) => {
+            status.textContent =
+              rechecked && rechecked.reply_to_note_id === replyToNoteId
+                ? `已自動修正：note #${newNote.id} 的回覆對象重新設定成功。`
+                : `⚠️ note #${newNote.id} 的回覆對象可能沒有正確設定，請透過編輯模式重新選擇一次並儲存確認。`
+            if (listMountEl) refreshList(listMountEl)
+          })
+          .catch(() => {
+            status.textContent = `⚠️ note #${newNote.id} 的回覆對象可能沒有正確設定，請透過編輯模式重新選擇一次並儲存確認。`
+          })
+      }
       if (filesToUpload.length) {
         Promise.allSettled(
           filesToUpload.map(({ file, mimeType }) => uploadAttachment({ noteId: newNote.id, ownerUid: currentSession.user.id, file, mimeType }))
