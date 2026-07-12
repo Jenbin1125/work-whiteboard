@@ -1117,7 +1117,14 @@ function renderFilters(listMount) {
   // filter BY even though it can't be set from this UI (id=432 §三 item 2).
   const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUS_TABS.map((k) => option(k, statusLabel(k)))])
   const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
-  const fromInput = el('input', { type: 'text', placeholder: '寄件篩選' })
+  // id=483§3.1: was a free-text input (ilike partial match on
+  // created_by_label); now a dropdown sharing the exact same 17-value
+  // canonical list 收 already uses (buildRecipientOptions()). The
+  // whiteboard.js query itself is untouched — none of these canonical
+  // values are substrings of each other, so the existing ilike('%value%')
+  // still resolves to an exact match once fed one of these values; no new
+  // query logic per the spec's explicit "不新增查詢邏輯".
+  const fromSelect = el('select', {}, [option('', '全部寄件人'), ...buildRecipientOptions()])
   const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
   const sortSelect = el('select', {}, [option('updated_desc', '最近更新'), option('created_desc', '最新建立'), option('oldest_raw', '最舊待整理')])
   // id=472§五.1: initialize from the module-level filters.sort (which
@@ -1136,18 +1143,22 @@ function renderFilters(listMount) {
   })
   const commonTagsBlock = buildCommonTagsBlock({ onSelect: (tag) => addTagToFilter(tag) })
 
+  // id=483§3.2/§二: regrouped by kind — Row1 content-type filters, Row2
+  // person/sort filters (all three are dropdowns now that 寄 is one too),
+  // Row3 the two tag-related controls together. Each .filter-row forces its
+  // own line (see style.css) so the grouping holds regardless of viewport
+  // width, rather than relying on incidental flex-wrap breaks.
+  const filterRow1 = el('div', { class: 'filter-row' }, [labeledField('專案', projectSelect), labeledField('狀態', statusSelect), labeledField('來源', sourceSelect)])
+  // id=435 §四.2 extension: same "寄/收" vocabulary as Compose + the row
+  // badges, applied here too so it's consistent everywhere the concept
+  // shows up (the spec's own wording: "同一套「寄/收」語彙貫穿列表與表單").
+  const filterRow2 = el('div', { class: 'filter-row' }, [labeledField('寄', fromSelect), labeledField('收', toSelect), labeledField('排序', sortSelect)])
+  const filterRow3 = el('div', { class: 'filter-row' }, [labeledField('標籤', tagFilterEditor.element), commonTagsBlock.element])
+
   const popover = el('div', { class: 'filter-popover hidden' }, [
-    labeledField('專案', projectSelect),
-    labeledField('狀態', statusSelect),
-    labeledField('來源', sourceSelect),
-    // id=435 §四.2 extension: same "寄/收" vocabulary as Compose + the row
-    // badges, applied here too so it's consistent everywhere the concept
-    // shows up (the spec's own wording: "同一套「寄/收」語彙貫穿列表與表單").
-    labeledField('寄', fromInput),
-    labeledField('收', toSelect),
-    labeledField('排序', sortSelect),
-    labeledField('標籤', tagFilterEditor.element),
-    commonTagsBlock.element,
+    filterRow1,
+    filterRow2,
+    filterRow3,
     el('button', { type: 'button', class: 'clear-filters-btn', text: '清除全部', onclick: clearAllFilters }),
   ])
 
@@ -1171,7 +1182,7 @@ function renderFilters(listMount) {
       ...filters,
       projectKey: projectSelect.value,
       source: sourceSelect.value,
-      from: fromInput.value.trim(),
+      from: fromSelect.value,
       to: toSelect.value,
       search: searchInput.value.trim(),
     }
@@ -1303,7 +1314,7 @@ function renderFilters(listMount) {
     searchInput.value = ''
     projectSelect.value = ''
     sourceSelect.value = ''
-    fromInput.value = ''
+    fromSelect.value = ''
     toSelect.value = ''
     tagFilterEditor.setTags([])
     filters = { ...filters, tags: [], status: '' }
@@ -1341,7 +1352,7 @@ function renderFilters(listMount) {
     projectSelect.value = ''
     statusSelect.value = ''
     sourceSelect.value = ''
-    fromInput.value = ''
+    fromSelect.value = ''
     toSelect.value = ''
     tagFilterEditor.setTags([tag])
     filters = { ...filters, projectKey: '', status: '', source: '', from: '', to: '', search: '', tags: [tag] }
@@ -1372,7 +1383,7 @@ function renderFilters(listMount) {
     if (filters.projectKey) chips.push(['專案: ' + projectLabel(filters.projectKey), () => clearOne('projectKey', projectSelect, '')])
     if (filters.status) chips.push(['狀態: ' + statusLabel(filters.status), () => setStatus('')])
     if (filters.source) chips.push(['來源: ' + sourceLabel(filters.source), () => clearOne('source', sourceSelect, '')])
-    if (filters.from) chips.push(['寄: ' + filters.from, () => clearOne('from', fromInput, '')])
+    if (filters.from) chips.push(['寄: ' + recipientLabel(filters.from), () => clearOne('from', fromSelect, '')])
     if (filters.to) chips.push(['收: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : recipientLabel(filters.to)), () => clearOne('to', toSelect, '')])
     filters.tags.forEach((t) => chips.push(['標籤: ' + displayTag(t), () => removeTagFromFilter(t)]))
 
@@ -1404,8 +1415,10 @@ function renderFilters(listMount) {
   statusSelect.addEventListener('change', () => setStatus(statusSelect.value))
   sourceSelect.addEventListener('change', apply)
   sortSelect.addEventListener('change', applySort)
-  const debouncedFrom = debounce(apply, 300)
-  fromInput.addEventListener('input', debouncedFrom)
+  // id=483§3.1: was a debounced 'input' listener for the free-text version —
+  // now a <select>, so a plain 'change' listener matches every other select
+  // in this popover (no debounce needed, a selection is a discrete event).
+  fromSelect.addEventListener('change', apply)
   toSelect.addEventListener('change', apply)
 
   trashToggle.addEventListener('click', () => {

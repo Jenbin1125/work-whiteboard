@@ -104,7 +104,7 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 }
 .filter-popover {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.6rem;
   background: #fff;
   border: 1px solid #ddd;
@@ -114,6 +114,9 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 }
 .filter-popover.hidden { display: none; }
 .filter-popover select, .filter-popover input { font-size: 0.82rem; padding: 0.3rem; }
+/* id=483§二: each group (content-type / person+sort / tag) always starts
+   its own line, regardless of viewport width. */
+.filter-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.6rem; }
 .clear-filters-btn {
   align-self: flex-end;
   background: none;
