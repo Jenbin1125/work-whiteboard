@@ -24,6 +24,11 @@ export const RECIPIENTS = [
   'Feedback-Claude',
   'Ambassador-Claude',
   'Tech-Claude',
+  // id=538: meta_agent_registry v1.4 added this as a third identity
+  // category (跨域整合型/企劃處式) — already live in the DB's
+  // work_whiteboard_recipient_check CHECK constraint (verified before this
+  // change), the frontend just hadn't been synced to it yet.
+  'Cowork-Claude',
   'Human-Jenbin',
   'GPT',
   'Codex',

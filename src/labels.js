@@ -40,6 +40,10 @@ export const RECIPIENT_LABELS = {
   'Feedback-Claude': '回饋',
   'Ambassador-Claude': '大使',
   'Tech-Claude': '技術',
+  // id=538: no verbatim label given (only 4 were, back at id=434 §三.1) —
+  // best-guess placeholder consistent with the rest of this table, same
+  // "draft pending UI-Claude's pass" status as the others.
+  'Cowork-Claude': '協作',
   'Human-Jenbin': 'Jenbin',
   GPT: 'GPT',
   Codex: 'Codex',
@@ -71,6 +75,10 @@ export const RECIPIENT_GROUPS = [
       'Feedback-Claude',
       'Ambassador-Claude',
       'Tech-Claude',
+      // id=538: appended rather than a new optgroup — spec left grouping to
+      // CC's judgment ("既有12位公民之後...或依你覺得合理的邏輯分組"); a
+      // 4th single-value group felt like more ceremony than this warrants.
+      'Cowork-Claude',
     ],
   },
   { label: 'GPT / Codex / CC', values: ['GPT', 'Codex', 'Orchestrator-Assistant', 'CC'] },
