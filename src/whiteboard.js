@@ -70,9 +70,19 @@ export async function listNotes({ projectKey, status, sourceType, tags, trash, f
   // id=434 §六: "最舊待整理" is a pure ordering choice here — the UI layer
   // pairs it with the status=raw filter above rather than this function
   // forcing it, so it never conflicts with an explicit status filter.
+  // id=622/625: id DESC is now the default (was updated_at DESC) — trg_wb_
+  // updated_at bumps on every UPDATE (status changes, soft-delete, batch
+  // governance writes), so it reflects "last touched", not "recently
+  // relevant", and a single batch write could float a whole cluster of old
+  // notes back to the top with same-second ties. id is monotonic and never
+  // ties, which is exactly what "quickly relocate a specific card" needs.
+  // updated_desc stays available as an explicit, deliberately-chosen option
+  // rather than being removed outright — this ticket's scope was changing
+  // the default, not deleting the option (see CC's reply for why).
   if (sort === 'created_asc') query = query.order('created_at', { ascending: true })
   else if (sort === 'created_desc') query = query.order('created_at', { ascending: false })
-  else query = query.order('updated_at', { ascending: false })
+  else if (sort === 'updated_desc') query = query.order('updated_at', { ascending: false })
+  else query = query.order('id', { ascending: false })
 
   query = query.range(offset, offset + limit - 1)
 

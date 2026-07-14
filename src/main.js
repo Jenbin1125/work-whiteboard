@@ -1126,11 +1126,23 @@ function renderFilters(listMount) {
   // query logic per the spec's explicit "不新增查詢邏輯".
   const fromSelect = el('select', {}, [option('', '全部寄件人'), ...buildRecipientOptions()])
   const toSelect = el('select', {}, [option('', '全部收件人'), option(UNSET_RECIPIENT, '未指名'), ...buildRecipientOptions()])
-  const sortSelect = el('select', {}, [option('updated_desc', '最近更新'), option('created_desc', '最新建立'), option('oldest_raw', '最舊待整理')])
+  // id=625: 卡片編號（新到舊）is the new default — id is monotonic and never
+  // ties, unlike 最近更新 (updated_at DESC), which id=622 traced to
+  // trg_wb_updated_at bumping on every UPDATE including governance batch
+  // writes, clumping unrelated old notes back to the top with same-second
+  // ties. 最近更新 stays selectable (this ticket changes the default, not
+  // what's available) — see CC's reply for why it wasn't removed outright.
+  const sortSelect = el('select', {}, [
+    option('id_desc', '卡片編號（新到舊）'),
+    option('updated_desc', '最近更新'),
+    option('created_desc', '最新建立'),
+    option('oldest_raw', '最舊待整理'),
+  ])
   // id=472§五.1: initialize from the module-level filters.sort (which
   // clearAllFilters no longer touches) rather than hardcoding the default —
   // defensive correctness if renderFilters() is ever invoked again mid-session.
-  sortSelect.value = filters.sort === 'created_desc' ? 'created_desc' : filters.sort === 'created_asc' ? 'oldest_raw' : 'updated_desc'
+  sortSelect.value =
+    filters.sort === 'created_desc' ? 'created_desc' : filters.sort === 'created_asc' ? 'oldest_raw' : filters.sort === 'updated_desc' ? 'updated_desc' : 'id_desc'
 
   const tagFilterEditor = buildTagChipEditor({
     initialTags: [],
@@ -1299,9 +1311,12 @@ function renderFilters(listMount) {
     } else if (val === 'created_desc') {
       filters = { ...filters, sort: 'created_desc' }
       saveSortPref('created_desc')
+    } else if (val === 'updated_desc') {
+      filters = { ...filters, sort: 'updated_desc' }
+      saveSortPref('updated_desc')
     } else {
-      filters = { ...filters, sort: undefined }
-      saveSortPref(undefined)
+      filters = { ...filters, sort: 'id_desc' }
+      saveSortPref('id_desc')
     }
     renderChips()
     refreshList(listMount)
@@ -1629,11 +1644,16 @@ function renderRow(note, mount) {
 // timestamp only (not formatTimeMeta below, used in the expanded row detail
 // and the detail panel — neither is part of a sorted list, so basis-matching
 // doesn't apply there the same way).
+// id=625: id_desc (the new default) and created_desc/created_asc are all
+// fundamentally about creation order, so all three show created_at —
+// updated_desc is now the one explicit opt-in mode that shows updated_at,
+// flipped from before (previously "anything but created_*" meant
+// updated_at, back when that was the implicit default).
 function formatCardTimestamp(note) {
-  if (filters.sort === 'created_desc' || filters.sort === 'created_asc') {
-    return new Date(note.created_at).toLocaleString()
+  if (filters.sort === 'updated_desc') {
+    return new Date(note.updated_at || note.created_at).toLocaleString()
   }
-  return new Date(note.updated_at || note.created_at).toLocaleString()
+  return new Date(note.created_at).toLocaleString()
 }
 
 function formatTimeMeta(note) {
