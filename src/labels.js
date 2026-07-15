@@ -44,6 +44,11 @@ export const RECIPIENT_LABELS = {
   // best-guess placeholder consistent with the rest of this table, same
   // "draft pending UI-Claude's pass" status as the others.
   'Cowork-Claude': '協作',
+  // id=709: UI-Claude explicitly suggested "Claude-in-Chrome（瀏覽器代理）" —
+  // reordered here to match this table's existing convention (friendly name
+  // first; buildRecipientOptions() appends the canonical value in
+  // parentheses on its own, so this renders as "瀏覽器代理（Claude-in-Chrome）").
+  'Claude-in-Chrome': '瀏覽器代理',
   'Human-Jenbin': 'Jenbin',
   GPT: 'GPT',
   Codex: 'Codex',
@@ -79,6 +84,10 @@ export const RECIPIENT_GROUPS = [
       // CC's judgment ("既有12位公民之後...或依你覺得合理的邏輯分組"); a
       // 4th single-value group felt like more ceremony than this warrants.
       'Cowork-Claude',
+      // id=709: UI-Claude explicitly asked for this right after
+      // Cowork-Claude — both are special-role identities, not "citizen"
+      // agents, so grouped together rather than inserted mid-list.
+      'Claude-in-Chrome',
     ],
   },
   { label: 'GPT / Codex / CC', values: ['GPT', 'Codex', 'Orchestrator-Assistant', 'CC'] },

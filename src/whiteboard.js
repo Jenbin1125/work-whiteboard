@@ -29,6 +29,13 @@ export const RECIPIENTS = [
   // work_whiteboard_recipient_check CHECK constraint (verified before this
   // change), the frontend just hadn't been synced to it yet.
   'Cowork-Claude',
+  // id=708/709: same DB-ahead-of-frontend gap, same fix — Ambassador-Claude
+  // expanded the CHECK constraint 18→19 (verified before this change), CC
+  // just syncs the frontend list. Placed right after Cowork-Claude per
+  // UI-Claude's id=709 guidance: both are special-role identities (not
+  // "citizen" agents that autonomously work whiteboard tasks), so grouped
+  // together at the tail rather than inserted into the 12-agent block.
+  'Claude-in-Chrome',
   'Human-Jenbin',
   'GPT',
   'Codex',
