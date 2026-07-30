@@ -204,9 +204,6 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .badge-to-unset { background: none; color: #888; padding-left: 0; padding-right: 0; }
 /* id=435 §四.2: "寄"/"收" replaces the old person-icon SVG on row badges. */
 .badge-kind { font-weight: 700; }
-/* id=1874/835§二.2: low-key — muted, not the same green as an active 收 badge
-   (that would read as a status change rather than a manual send-marker). */
-.badge-relayed { background: #f1f5f9; color: #64748b; }
 
 /* id=1874/835§二.2: detail panel's 轉達 status + manual toggle. */
 .relayed-control { margin: 0.4rem 0; }
