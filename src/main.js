@@ -2327,25 +2327,37 @@ async function copyReferenceAndMarkRelayed(note) {
     showToast(friendlyErrorMessage(err))
     return false
   }
-  const nowIso = new Date().toISOString()
+  // id=1912: the write is now a toggle, not an always-forward mark — a
+  // second click on an already-relayed card cancels it (restores NULL)
+  // instead of just re-stamping `now()`. Copying still happens every click
+  // either way; only which direction the mark moves depends on prior state.
+  const wasRelayed = Boolean(note.relayed_at)
+  const nextValue = wasRelayed ? null : new Date().toISOString()
   try {
-    await setRelayedAt(note.id, nowIso)
+    await setRelayedAt(note.id, nextValue)
   } catch (err) {
     // Copy itself already succeeded — say so — but 護欄6 still requires the
-    // mark's own failure to be explicit, never silently swallowed.
-    showToast('已複製白板引用，但' + (err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err)))
+    // mark's own failure to be explicit, never silently swallowed. Longer
+    // duration than the default toast: an error deserves more than 1.5s.
+    showToast('已複製白板引用，但' + (err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err)), { duration: 4000 })
     return true
   }
-  note.relayed_at = nowIso
+  note.relayed_at = nextValue
   if (listMountEl) refreshList(listMountEl)
-  if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(nowIso)
+  if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(nextValue)
+  if (wasRelayed) {
+    // Cancelling has no natural "undo to what" — a fresh mark, if wanted, is
+    // just another click away — so no inline undo action here.
+    showToast('已複製白板引用，已取消轉達標記')
+    return true
+  }
   showToast('已複製白板引用，已標記為已轉達', {
     actionLabel: '復原',
     onAction: async () => {
       try {
         await setRelayedAt(note.id, null)
       } catch (err) {
-        showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err))
+        showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err), { duration: 4000 })
         return
       }
       note.relayed_at = null
@@ -2391,7 +2403,7 @@ function buildRelayedControl(note) {
     try {
       await setRelayedAt(note.id, nextValue)
     } catch (err) {
-      showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err))
+      showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err), { duration: 4000 })
       return
     }
     note.relayed_at = nextValue
