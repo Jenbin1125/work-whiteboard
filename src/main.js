@@ -1690,13 +1690,14 @@ function renderRow(note, mount) {
     ? el('span', { class: 'badge badge-to-set' }, [el('span', { class: 'badge-kind', text: '收' }), el('span', { text: recipientLabel(note.recipient) })])
     : el('span', { class: 'badge-to-unset' }, [el('span', { class: 'badge-kind', text: '收' }), el('span', { text: '未指名' })])
   // id=435 §三.2: From/To stacked vertically (was side-by-side).
-  // id=1874/835§二.2: relayed_at set → low-key mark; NULL → nothing at all
-  // (this app's established "no data, no space taken" convention — the same
-  // one the tag-empty-hint area and 常用標籤's empty state already follow).
-  const relayedBadge = note.relayed_at
-    ? el('span', { class: 'badge badge-relayed', title: RELAYED_TOOLTIP, text: '✓ 已轉達' })
-    : null
-  const fromToStack = el('div', { class: 'wb-row-fromto' }, relayedBadge ? [fromBadge, toBadge, relayedBadge] : [fromBadge, toBadge])
+  // id=1932/842§2.2: the "✓ 已轉達" text badge (id=1874) was removed —
+  // it expressed the exact same boolean the row's own relayedCheckbox
+  // (id=1919) already shows, so it was pure duplication, not a §2.2.1
+  // "control needs to exist before first use" case. §2.2.1-a now spells
+  // this boundary out explicitly. The detail panel's own timestamp
+  // display and the relayed_at write path are both untouched — only this
+  // one redundant list-row display element is gone.
+  const fromToStack = el('div', { class: 'wb-row-fromto' }, [fromBadge, toBadge])
 
   // id=438: 🏈 交棒卡-format notes preview the extracted「球（任務）」text
   // instead of Title/first-line — Title is often just a restated headline,
