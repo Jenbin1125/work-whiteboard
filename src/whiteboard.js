@@ -52,11 +52,14 @@ const TABLE = 'work_whiteboard'
 // id=434 §八: the list view only ever needs these — never extracted_to (a
 // Path B / detail-only concern). The detail panel does its own full-row
 // getNoteById() fetch below, so trimming here never starves it.
-const LIST_COLUMNS = 'id, title, content, project_key, source_type, tags, status, recipient, created_by_label, created_at, updated_at, deleted_at'
+// id=1874/835: relayed_at added — cheap boolean-ish column, no reason to
+// exclude it from the trimmed set the way extracted_to (a jsonb blob) is.
+const LIST_COLUMNS =
+  'id, title, content, project_key, source_type, tags, status, recipient, created_by_label, created_at, updated_at, deleted_at, relayed_at'
 
 export const PAGE_SIZE = 50
 
-export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search, sort, offset = 0, limit = PAGE_SIZE } = {}) {
+export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search, sort, relayed, offset = 0, limit = PAGE_SIZE } = {}) {
   let query = supabase.from(TABLE).select(LIST_COLUMNS)
   query = trash ? query.not('deleted_at', 'is', null) : query.is('deleted_at', null)
 
@@ -69,6 +72,11 @@ export async function listNotes({ projectKey, status, sourceType, tags, trash, f
   if (fromLabel) query = query.ilike('created_by_label', `%${fromLabel}%`)
   if (to === UNSET_RECIPIENT) query = query.is('recipient', null)
   else if (to) query = query.eq('recipient', to)
+  // id=1874/835§2.3: "找出還沒送出去的卡" is this column's core use case —
+  // plain column filter, no new query concept beyond what status/source
+  // filters above already do.
+  if (relayed === 'relayed') query = query.not('relayed_at', 'is', null)
+  else if (relayed === 'not_relayed') query = query.is('relayed_at', null)
   if (search) {
     const escaped = search.replace(/[%,]/g, '')
     query = query.or(`title.ilike.%${escaped}%,content.ilike.%${escaped}%`)
@@ -317,6 +325,23 @@ export async function updateNote(id, fields) {
 export async function updateStatus(id, status) {
   const { error } = await supabase.from(TABLE).update({ status }).eq('id', id)
   if (error) throw error
+}
+
+// id=1874/835§二.4 (護欄6): a plain UPDATE, never a CAS RPC (護欄3 — this
+// column must never touch work_whiteboard_cas_audit_events). Chaining
+// .select('id') after the update returns the row(s) actually written,
+// which is the real affected-row count RLS/PostgREST give us — not
+// something this function has to infer or assume. Zero rows back means
+// the write didn't happen (RLS denied it, or the row's gone), which the
+// caller must surface as an explicit failure, never a silent success.
+export async function setRelayedAt(id, value) {
+  const { data, error } = await supabase.from(TABLE).update({ relayed_at: value }).eq('id', id).select('id')
+  if (error) throw error
+  if (!data || data.length === 0) {
+    const zeroRowsError = new Error('這張卡未被更新（可能權限不足或卡片已變動），請重新整理後再試')
+    zeroRowsError.zeroRowsAffected = true
+    throw zeroRowsError
+  }
 }
 
 export async function softDelete(id) {
