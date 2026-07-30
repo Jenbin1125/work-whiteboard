@@ -221,6 +221,22 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
   color: #445;
 }
 
+/* id=1919/840§2.6: the list row's own toggle — same 44x44 hit-target
+   convention as .copy-icon-btn (id=434), visual box stays small and the
+   label's padding fills the rest so rows don't need to grow to fit it. */
+.relayed-checkbox-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.relayed-checkbox { width: 16px; height: 16px; cursor: pointer; margin: 0; }
+.relayed-checkbox-wrap.busy { opacity: 0.5; }
+.relayed-checkbox-wrap.busy .relayed-checkbox { cursor: wait; }
+
 /* id=435 §四.1: reverts §三.3 — tags are back on their own line below
    Topic, not sharing its line. */
 .wb-row-topic-block { display: flex; flex-direction: column; gap: 0.2rem; flex: 1 1 200px; min-width: 0; }

@@ -1578,6 +1578,82 @@ function buildRowTagChips(note) {
   return el('div', { class: 'wb-row-tags' }, children)
 }
 
+// id=1919/840§2.6: the list-level checkbox — the actual "取消轉達" entry
+// point (§2.1's primary manual path), not the row's existing copy icons
+// (those stay one-way per id=1915) and not just the detail panel's toggle
+// (§2.1-4 requires it and this checkbox to be two entries into the same
+// state, never maintained separately — refreshList() already re-fetches
+// and re-renders every row from the DB after any of the three write paths,
+// which is what keeps this checkbox, the detail panel, and each other row
+// in sync without a dedicated registry).
+//
+// Native <input type="checkbox"> per §2.6.2 (not a custom icon — it comes
+// with keyboard/AT semantics for free, which is the whole reason the spec
+// picked it). §2.6.3's four states (未勾/已勾/寫入中/失敗) are implemented
+// by intercepting the click and calling preventDefault(): a native checkbox
+// normally flips .checked before any handler can react, which is exactly
+// the "顯示為已勾 before the write is confirmed" 護欄6 forbids. Holding the
+// visual state until commit() flips it on confirmed success means a failed
+// write never had a checked box to visually revert from in the first place.
+function buildRelayedCheckbox(note) {
+  const checkbox = el('input', {
+    type: 'checkbox',
+    class: 'relayed-checkbox',
+    'aria-label': '標記為已轉達（代表你已送出，不代表對方已讀）',
+  })
+  checkbox.checked = Boolean(note.relayed_at)
+
+  const wrap = el('label', { class: 'relayed-checkbox-wrap', title: RELAYED_TOOLTIP }, [checkbox])
+  // Both the label's own click and the input's synthetic click (fired by
+  // the label's default "activate labeled control" behavior) bubble up
+  // independently — without stopping both, either one would still reach
+  // rowMain's click-to-expand listener.
+  wrap.addEventListener('click', (e) => e.stopPropagation())
+
+  async function commit(nextValue) {
+    checkbox.disabled = true
+    wrap.classList.add('busy')
+    try {
+      await setRelayedAt(note.id, nextValue)
+    } catch (err) {
+      // 失敗 (§2.6.3): .checked was never flipped, so there is nothing to
+      // revert on-screen — just re-enable and surface the error via the
+      // shared (now ARIA-live) toast.
+      checkbox.disabled = false
+      wrap.classList.remove('busy')
+      showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err), { duration: 4000 })
+      return
+    }
+    note.relayed_at = nextValue
+    checkbox.checked = Boolean(nextValue)
+    checkbox.disabled = false
+    wrap.classList.remove('busy')
+    if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(nextValue)
+    if (listMountEl) refreshList(listMountEl)
+  }
+
+  checkbox.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (checkbox.disabled) return
+    // For checkbox/radio inputs the browser flips .checked *before*
+    // dispatching click, then reverts it if the event is cancelled — so
+    // checkbox.checked here already reflects the user's intended new value.
+    // 寫入中不得先行顯示為已勾 (§2.6.3): preventDefault() reverts that
+    // visual flip immediately after this handler returns; commit() is what
+    // sets .checked back to the intended value, but only once the write
+    // actually succeeds — never optimistically.
+    const nextValue = checkbox.checked ? new Date().toISOString() : null
+    e.preventDefault()
+    commit(nextValue)
+  })
+  // rowMain's own keydown handler already guards on `e.target !== rowMain`,
+  // so it won't fire for a keydown targeting this checkbox — this is just
+  // hygiene against any other ancestor listener.
+  checkbox.addEventListener('keydown', (e) => e.stopPropagation())
+
+  return wrap
+}
+
 function renderRow(note, mount) {
   const isTrashed = !!note.deleted_at
   const actionsEl = isTrashed ? buildTrashActions(note, mount) : buildNormalActions(note, mount)
@@ -1644,10 +1720,15 @@ function renderRow(note, mount) {
   // is removed per §三.5 — row-click-to-expand is unchanged, it just no
   // longer has a dedicated visual "button" implying a second way to trigger
   // the same thing.
+  // id=1919/840§2.6.1: at the row's very start, physically separate from
+  // rowActions at the other end — state (this) vs. action (those) never
+  // share a hit-testing neighborhood, so reaching for one can't clip the other.
+  const relayedCheckbox = buildRelayedCheckbox(note)
+
   const rowMain = el(
     'div',
     { class: 'wb-row-main', role: 'button', tabindex: '0', 'aria-expanded': String(isExpanded) },
-    [idEl, fromToStack, topicBlock, rowActions, timeEl]
+    [relayedCheckbox, idEl, fromToStack, topicBlock, rowActions, timeEl]
   )
 
   const toggle = () => {
@@ -2417,7 +2498,12 @@ function buildRelayedControl(note) {
 function showToast(message, { actionLabel, onAction, duration = 1500 } = {}) {
   let toastEl = document.querySelector('.wb-toast')
   if (!toastEl) {
-    toastEl = el('div', { class: 'wb-toast' })
+    // id=1919/840§2.6.4: the checkbox's own auto-mark (R3) and failure
+    // states route their messaging through this shared toast — making it a
+    // proper ARIA live region satisfies "must be announced" / "failure must
+    // be perceivable by assistive tech" for every toast in the app, not
+    // just this feature, with one attribute.
+    toastEl = el('div', { class: 'wb-toast', role: 'status', 'aria-live': 'polite' })
     document.body.appendChild(toastEl)
   }
   const children = [el('span', { class: 'wb-toast-msg', text: message })]
