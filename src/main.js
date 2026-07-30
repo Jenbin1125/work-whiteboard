@@ -2327,14 +2327,16 @@ async function copyReferenceAndMarkRelayed(note) {
     showToast(friendlyErrorMessage(err))
     return false
   }
-  // id=1912: the write is now a toggle, not an always-forward mark — a
-  // second click on an already-relayed card cancels it (restores NULL)
-  // instead of just re-stamping `now()`. Copying still happens every click
-  // either way; only which direction the mark moves depends on prior state.
-  const wasRelayed = Boolean(note.relayed_at)
-  const nextValue = wasRelayed ? null : new Date().toISOString()
+  // id=1915/840§2.1: one-way mark, not a toggle — id=840 §2.1-3 deliberately
+  // keeps copy-then-mark forward-only (a false positive here pollutes the
+  // triage list the same way 護欄6 does) and gives the toggle job to the
+  // list checkbox (§2.6, separate ticket) and the detail panel (§2.1-4)
+  // instead. id=1912's toggle-on-copy (briefly on main between #1874 and
+  // this ticket) was reverted per Ambassador's #1915 — Human confirmed the
+  // §2.1-3 premise ("複製完沒送出" genuinely happens) still holds.
+  const nowIso = new Date().toISOString()
   try {
-    await setRelayedAt(note.id, nextValue)
+    await setRelayedAt(note.id, nowIso)
   } catch (err) {
     // Copy itself already succeeded — say so — but 護欄6 still requires the
     // mark's own failure to be explicit, never silently swallowed. Longer
@@ -2342,15 +2344,9 @@ async function copyReferenceAndMarkRelayed(note) {
     showToast('已複製白板引用，但' + (err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err)), { duration: 4000 })
     return true
   }
-  note.relayed_at = nextValue
+  note.relayed_at = nowIso
   if (listMountEl) refreshList(listMountEl)
-  if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(nextValue)
-  if (wasRelayed) {
-    // Cancelling has no natural "undo to what" — a fresh mark, if wanted, is
-    // just another click away — so no inline undo action here.
-    showToast('已複製白板引用，已取消轉達標記')
-    return true
-  }
+  if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(nowIso)
   showToast('已複製白板引用，已標記為已轉達', {
     actionLabel: '復原',
     onAction: async () => {
