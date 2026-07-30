@@ -12,6 +12,7 @@ import {
   createNote,
   updateNote,
   updateStatus,
+  setRelayedAt,
   softDelete,
   restoreNote,
   hardDeleteNote,
@@ -89,9 +90,19 @@ let currentSession = null
 // id=445§⑤: sort is seeded from sessionStorage so it survives an F5 reload
 // (a plain module-level default here would reset every reload — the module
 // itself re-executes from scratch on a full page reload).
-let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: loadSortPref() }
+let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: loadSortPref(), relayed: '' }
 let activeNoteId = null
 let detailPanelEl = null
+// id=1874: getNoteById() fetches a fresh object for the detail panel — it is
+// never the same reference as the row's `note`, so a row-level copy/mark (or
+// the toast's deferred 復原, which fires long after any click handler that
+// triggered it has returned) can't refresh the open detail panel's relayed
+// control just by mutating a note object; the detail panel's own note object
+// also needs updating, not just its DOM. Tracked here so
+// copyReferenceAndMarkRelayed() can update whichever detail note is actually
+// on screen (by id) regardless of which `note` object reference it was
+// itself called with.
+let openDetailRelayed = null
 let tacticalPanelEl = null
 let globalTacticalPanelEl = null
 let listMountEl = null
@@ -1117,6 +1128,10 @@ function renderFilters(listMount) {
   // filter BY even though it can't be set from this UI (id=432 §三 item 2).
   const statusSelect = el('select', {}, [option('', '全部狀態'), ...STATUS_TABS.map((k) => option(k, statusLabel(k)))])
   const sourceSelect = el('select', {}, [option('', '全部來源'), ...SOURCE_TYPES.map((k) => option(k, sourceLabel(k)))])
+  // id=1874/835§2.3: "找出還沒送出去的卡" is this column's core use case, so
+  // it lives in Row1 alongside the other content/lifecycle-type filters
+  // (專案/狀態/來源) — no new UI section, per the spec's explicit ask.
+  const relayedSelect = el('select', {}, [option('', '全部'), option('relayed', '已轉達'), option('not_relayed', '未轉達')])
   // id=483§3.1: was a free-text input (ilike partial match on
   // created_by_label); now a dropdown sharing the exact same 17-value
   // canonical list 收 already uses (buildRecipientOptions()). The
@@ -1160,7 +1175,12 @@ function renderFilters(listMount) {
   // Row3 the two tag-related controls together. Each .filter-row forces its
   // own line (see style.css) so the grouping holds regardless of viewport
   // width, rather than relying on incidental flex-wrap breaks.
-  const filterRow1 = el('div', { class: 'filter-row' }, [labeledField('專案', projectSelect), labeledField('狀態', statusSelect), labeledField('來源', sourceSelect)])
+  const filterRow1 = el('div', { class: 'filter-row' }, [
+    labeledField('專案', projectSelect),
+    labeledField('狀態', statusSelect),
+    labeledField('來源', sourceSelect),
+    labeledField('轉達狀態', relayedSelect),
+  ])
   // id=435 §四.2 extension: same "寄/收" vocabulary as Compose + the row
   // badges, applied here too so it's consistent everywhere the concept
   // shows up (the spec's own wording: "同一套「寄/收」語彙貫穿列表與表單").
@@ -1197,6 +1217,7 @@ function renderFilters(listMount) {
       from: fromSelect.value,
       to: toSelect.value,
       search: searchInput.value.trim(),
+      relayed: relayedSelect.value,
     }
     renderChips()
     refreshList(listMount)
@@ -1331,6 +1352,7 @@ function renderFilters(listMount) {
     sourceSelect.value = ''
     fromSelect.value = ''
     toSelect.value = ''
+    relayedSelect.value = ''
     tagFilterEditor.setTags([])
     filters = { ...filters, tags: [], status: '' }
     statusSelect.value = ''
@@ -1369,8 +1391,9 @@ function renderFilters(listMount) {
     sourceSelect.value = ''
     fromSelect.value = ''
     toSelect.value = ''
+    relayedSelect.value = ''
     tagFilterEditor.setTags([tag])
-    filters = { ...filters, projectKey: '', status: '', source: '', from: '', to: '', search: '', tags: [tag] }
+    filters = { ...filters, projectKey: '', status: '', source: '', from: '', to: '', search: '', relayed: '', tags: [tag] }
     renderChips()
     refreshList(listMount)
     if (statusTabsRef) statusTabsRef.updateActive()
@@ -1400,6 +1423,7 @@ function renderFilters(listMount) {
     if (filters.source) chips.push(['來源: ' + sourceLabel(filters.source), () => clearOne('source', sourceSelect, '')])
     if (filters.from) chips.push(['寄: ' + recipientLabel(filters.from), () => clearOne('from', fromSelect, '')])
     if (filters.to) chips.push(['收: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : recipientLabel(filters.to)), () => clearOne('to', toSelect, '')])
+    if (filters.relayed) chips.push(['轉達狀態: ' + (filters.relayed === 'relayed' ? '已轉達' : '未轉達'), () => clearOne('relayed', relayedSelect, '')])
     filters.tags.forEach((t) => chips.push(['標籤: ' + displayTag(t), () => removeTagFromFilter(t)]))
 
     chipsRow.replaceChildren(
@@ -1435,6 +1459,7 @@ function renderFilters(listMount) {
   // in this popover (no debounce needed, a selection is a discrete event).
   fromSelect.addEventListener('change', apply)
   toSelect.addEventListener('change', apply)
+  relayedSelect.addEventListener('change', apply)
 
   trashToggle.addEventListener('click', () => {
     filters = { ...filters, trash: !filters.trash }
@@ -1447,7 +1472,16 @@ function renderFilters(listMount) {
 }
 
 function hasActiveFilters() {
-  return !!(filters.projectKey || filters.status || filters.source || filters.from || filters.to || filters.search || (filters.tags && filters.tags.length))
+  return !!(
+    filters.projectKey ||
+    filters.status ||
+    filters.source ||
+    filters.from ||
+    filters.to ||
+    filters.search ||
+    filters.relayed ||
+    (filters.tags && filters.tags.length)
+  )
 }
 
 function buildListParams() {
@@ -1461,6 +1495,7 @@ function buildListParams() {
     to: filters.to,
     search: filters.search,
     sort: filters.sort,
+    relayed: filters.relayed,
   }
 }
 
@@ -1579,7 +1614,13 @@ function renderRow(note, mount) {
     ? el('span', { class: 'badge badge-to-set' }, [el('span', { class: 'badge-kind', text: '收' }), el('span', { text: recipientLabel(note.recipient) })])
     : el('span', { class: 'badge-to-unset' }, [el('span', { class: 'badge-kind', text: '收' }), el('span', { text: '未指名' })])
   // id=435 §三.2: From/To stacked vertically (was side-by-side).
-  const fromToStack = el('div', { class: 'wb-row-fromto' }, [fromBadge, toBadge])
+  // id=1874/835§二.2: relayed_at set → low-key mark; NULL → nothing at all
+  // (this app's established "no data, no space taken" convention — the same
+  // one the tag-empty-hint area and 常用標籤's empty state already follow).
+  const relayedBadge = note.relayed_at
+    ? el('span', { class: 'badge badge-relayed', title: RELAYED_TOOLTIP, text: '✓ 已轉達' })
+    : null
+  const fromToStack = el('div', { class: 'wb-row-fromto' }, relayedBadge ? [fromBadge, toBadge, relayedBadge] : [fromBadge, toBadge])
 
   // id=438: 🏈 交棒卡-format notes preview the extracted「球（任務）」text
   // instead of Title/first-line — Title is often just a restated headline,
@@ -2228,14 +2269,7 @@ function buildRowActionIcons(note) {
   const copyLinkBtn = buildIconAction({
     icon: iconLink(),
     label: '複製連結',
-    onActivate: async () => {
-      try {
-        await copyToClipboard(buildReferenceText(note))
-        return true
-      } catch {
-        return false
-      }
-    },
+    onActivate: () => copyReferenceAndMarkRelayed(note),
   })
   const copyContentBtn = buildIconAction({
     icon: iconCopy(),
@@ -2274,10 +2308,14 @@ function buildRowActionIcons(note) {
 
 // --- copy-reference (id=427 §二): id + short title + deep link, never the
 // full note content, so a paste into a chat can't leak sensitive content. ---
-// Only caller left is the detail panel's own "複製引用" button (id=435 §二
-// removed the row-level one — see buildRowActionIcons' comment), which
-// wants both the toast AND its own inline "已複製" swap.
-async function performCopy(note) {
+// id=1874/835§二.1: renamed from performCopy — now shared by every "複製引用"/
+// "複製連結" surface (row icons, detail panel button, flow-node icons; they
+// already all copy the identical reference text, id=435§三.4), since
+// relayed_at's auto-mark applies to the action itself, not to whichever
+// button happens to carry the "複製引用" label. showToast is the one shared
+// toast element, so copy-success and the mark's own outcome are combined
+// into a single message rather than one instantly overwriting the other.
+async function copyReferenceAndMarkRelayed(note) {
   if (copyInFlight) return false
   copyInFlight = true
   setTimeout(() => {
@@ -2285,12 +2323,84 @@ async function performCopy(note) {
   }, 600)
   try {
     await copyToClipboard(buildReferenceText(note))
-    showToast('已複製白板引用')
-    return true
   } catch (err) {
     showToast(friendlyErrorMessage(err))
     return false
   }
+  const nowIso = new Date().toISOString()
+  try {
+    await setRelayedAt(note.id, nowIso)
+  } catch (err) {
+    // Copy itself already succeeded — say so — but 護欄6 still requires the
+    // mark's own failure to be explicit, never silently swallowed.
+    showToast('已複製白板引用，但' + (err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err)))
+    return true
+  }
+  note.relayed_at = nowIso
+  if (listMountEl) refreshList(listMountEl)
+  if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(nowIso)
+  showToast('已複製白板引用，已標記為已轉達', {
+    actionLabel: '復原',
+    onAction: async () => {
+      try {
+        await setRelayedAt(note.id, null)
+      } catch (err) {
+        showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err))
+        return
+      }
+      note.relayed_at = null
+      if (listMountEl) refreshList(listMountEl)
+      if (openDetailRelayed && openDetailRelayed.id === note.id) openDetailRelayed.setRelayed(null)
+    },
+    duration: 4000,
+  })
+  return true
+}
+
+// id=1874/835§二.2: shown wherever relayed_at appears, so the "sent, not
+// necessarily read" distinction is worded identically everywhere.
+const RELAYED_TOOLTIP = '代表你已把這張卡送出，不代表對方已讀'
+
+// id=1874/835§二.1/§2.4: the detail panel's manual toggle — covers "已轉達
+// but never went through 複製引用" and "自動標記標錯了" cases the auto-mark
+// alone can't. A tiny self-contained component (element + sync) rather than
+// folding into buildViewBody() directly, so the copy button's handler can
+// call .sync() after copyReferenceAndMarkRelayed() mutates note.relayed_at
+// without forcing a full detail-panel redraw (which would also re-run
+// loadReplyContext/attachments.load() for no reason).
+function buildRelayedControl(note) {
+  const wrap = el('div', { class: 'relayed-control' })
+
+  function draw() {
+    if (note.relayed_at) {
+      wrap.replaceChildren(
+        el('span', { class: 'relayed-badge', title: RELAYED_TOOLTIP, text: '已轉達　' + new Date(note.relayed_at).toLocaleString() }),
+        el('button', { type: 'button', class: 'relayed-toggle-btn', text: '取消標記', onclick: toggle })
+      )
+    } else {
+      wrap.replaceChildren(
+        el('button', { type: 'button', class: 'relayed-toggle-btn', title: RELAYED_TOOLTIP, text: '標記為已轉達', onclick: toggle })
+      )
+    }
+  }
+
+  // id=1874/835§2.4 (護欄6): note.relayed_at only changes, and the control
+  // only redraws, after setRelayedAt's write is confirmed — never before.
+  async function toggle() {
+    const nextValue = note.relayed_at ? null : new Date().toISOString()
+    try {
+      await setRelayedAt(note.id, nextValue)
+    } catch (err) {
+      showToast(err.zeroRowsAffected ? `標記失敗：${err.message}` : friendlyErrorMessage(err))
+      return
+    }
+    note.relayed_at = nextValue
+    draw()
+    if (listMountEl) refreshList(listMountEl)
+  }
+
+  draw()
+  return { element: wrap, sync: draw }
 }
 
 // Toast (id=432 §十): the one shared, reused element — rapid actions can
@@ -2342,6 +2452,7 @@ function applyHighlight() {
 
 function closeDetailPanel() {
   if (!detailPanelEl) return
+  openDetailRelayed = null
   detailPanelEl.classList.add('hidden')
   detailPanelEl.replaceChildren()
   document.body.classList.remove('body-scroll-locked')
@@ -2463,14 +2574,7 @@ function buildFlowNode(note, { color, isCurrent, hints } = {}) {
   const copyBtn = buildIconAction({
     icon: iconLink(),
     label: '複製引用',
-    onActivate: async () => {
-      try {
-        await copyToClipboard(buildReferenceText(note))
-        return true
-      } catch {
-        return false
-      }
-    },
+    onActivate: () => copyReferenceAndMarkRelayed(note),
   })
   const bodyChildren = [
     el('div', { class: 'flow-node-line1' }, [
@@ -2556,7 +2660,7 @@ async function loadReplyContext(note, container) {
           type: 'button',
           class: 'flow-empty-copy-btn',
           text: '複製引用以建立回覆',
-          onclick: () => performCopy(note),
+          onclick: () => copyReferenceAndMarkRelayed(note),
         }),
       ])
     )
@@ -3390,8 +3494,16 @@ function renderDetailNote(note, { foundInList } = {}) {
 
   const copyBtnLabel = el('span', { text: '複製引用' })
   const copyBtn = el('button', { class: 'copy-ref-btn', type: 'button', 'aria-label': '複製白板引用' }, [iconLink(), copyBtnLabel])
+  const relayedControl = buildRelayedControl(note)
+  openDetailRelayed = {
+    id: note.id,
+    setRelayed(value) {
+      note.relayed_at = value
+      relayedControl.sync()
+    },
+  }
   copyBtn.addEventListener('click', async () => {
-    const ok = await performCopy(note)
+    const ok = await copyReferenceAndMarkRelayed(note)
     if (ok) {
       copyBtn.classList.add('copied')
       copyBtnLabel.textContent = '已複製'
@@ -3494,6 +3606,7 @@ function renderDetailNote(note, { foundInList } = {}) {
 
     return el('div', {}, [
       notInFilterNotice,
+      relayedControl.element,
       el('pre', { class: 'detail-content', text: note.content }),
       attachments.element,
       tagsEl,
