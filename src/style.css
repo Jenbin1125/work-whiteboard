@@ -128,6 +128,76 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
   color: #a00;
 }
 
+/* id=1963 §2: 任務線 filter panel — same popover treatment as .filter-popover,
+   its own block since rows carry a freshness badge rather than plain option
+   text. */
+.task-line-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.task-line-panel.hidden { display: none; }
+.task-line-panel-loading { color: #777; font-size: 0.85rem; margin: 0; }
+.task-line-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.task-line-panel-title { font-size: 0.82rem; font-weight: 600; color: #333; }
+.task-line-sort-toggle {
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  color: #445;
+}
+.task-line-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.task-line-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  background: #f8f9fa;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+  color: #333;
+  cursor: pointer;
+  text-align: left;
+}
+.task-line-row:hover { background: #eef0f2; }
+.task-line-row.active { border-color: #0f766e; background: #ecfdf5; }
+.task-line-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-line-freshness {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+/* 1-3 天 */
+.task-line-freshness-fresh { background: #ecfdf5; color: #047857; }
+/* 4-10 天 */
+.task-line-freshness-warm { background: #fffbeb; color: #b45309; }
+/* 11+ 天 */
+.task-line-freshness-stale { background: #fef2f2; color: #b91c1c; }
+/* 尚無卡片（如 id=1963 未回填的 #427/#455） */
+.task-line-freshness-none { background: #f3f4f6; color: #888; }
+
 .filter-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .filter-chip {
   display: inline-flex;

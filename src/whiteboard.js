@@ -54,18 +54,22 @@ const TABLE = 'work_whiteboard'
 // getNoteById() fetch below, so trimming here never starves it.
 // id=1874/835: relayed_at added — cheap boolean-ish column, no reason to
 // exclude it from the trimmed set the way extracted_to (a jsonb blob) is.
+// id=1963: task_line_id added — a plain nullable FK column, same trimmed-set
+// reasoning as relayed_at above (cheap scalar, no reason to exclude it from
+// the list view just because the detail panel's getNoteById('*') also has it).
 const LIST_COLUMNS =
-  'id, title, content, project_key, source_type, tags, status, recipient, created_by_label, created_at, updated_at, deleted_at, relayed_at'
+  'id, title, content, project_key, source_type, tags, status, recipient, created_by_label, created_at, updated_at, deleted_at, relayed_at, task_line_id'
 
 export const PAGE_SIZE = 50
 
-export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search, sort, relayed, offset = 0, limit = PAGE_SIZE } = {}) {
+export async function listNotes({ projectKey, status, sourceType, tags, trash, fromLabel, to, search, sort, relayed, taskLineId, offset = 0, limit = PAGE_SIZE } = {}) {
   let query = supabase.from(TABLE).select(LIST_COLUMNS)
   query = trash ? query.not('deleted_at', 'is', null) : query.is('deleted_at', null)
 
   if (projectKey) query = query.eq('project_key', projectKey)
   if (status) query = query.eq('status', status)
   if (sourceType) query = query.eq('source_type', sourceType)
+  if (taskLineId) query = query.eq('task_line_id', taskLineId)
   // .contains('tags', [...]) is Postgres array @> — already AND semantics
   // for however many tags are passed (id=433 §四.2), no extra logic needed.
   if (tags && tags.length) query = query.contains('tags', tags)
@@ -280,12 +284,51 @@ export async function listGlobalPendingBalls() {
   return data
 }
 
-export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId }) {
+// id=1963: task_lines is its own table (37 seeded rows, board_rank already
+// finalized) — this is purely a read for populating the Compose dropdown
+// and the whiteboard filter panel, no write path from this app.
+const TASK_LINES_TABLE = 'task_lines'
+
+export async function listTaskLines() {
+  const { data, error } = await supabase
+    .from(TASK_LINES_TABLE)
+    .select('id, canonical_key, display_name, board_rank')
+    .order('board_rank', { ascending: true, nullsFirst: false })
+  if (error) throw error
+  return data
+}
+
+// id=1963 §2's "靜止天數" (idle days) source: the filter panel needs, per
+// task line, the most recent work_whiteboard.created_at among its cards.
+// This is a plain SELECT + client-side reduction (order by created_at DESC,
+// keep the first row seen per task_line_id) rather than a new view/RPC —
+// same no-RPC POC pattern already used throughout this file (e.g.
+// listGlobalPendingBalls above reads an existing view, but nothing here
+// defines a new one). Soft-deleted notes don't count as "activity" — a
+// deleted card shouldn't make a task line look freshly touched.
+export async function getTaskLineLastActivity() {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('task_line_id, created_at')
+    .not('task_line_id', 'is', null)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  const lastActivity = new Map()
+  for (const row of data) {
+    if (!lastActivity.has(row.task_line_id)) lastActivity.set(row.task_line_id, row.created_at)
+  }
+  return lastActivity
+}
+
+export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId, taskLineId }) {
   // Only writable columns per id=421 §2 / id=426 §2 / id=432 §〇 / id=439 §三
   // grants — never send id / created_by_uid / last_modified_by /
   // extracted_to / created_at / updated_at. recipient and reply_to_note_id
   // are both purely display/routing/structural, never authorization
   // (id=439 §三's column comment is explicit about this for the latter).
+  // id=1963/1966: task_line_id is the same kind of grant — a plain nullable
+  // FK, freely settable at creation like recipient/reply_to_note_id.
   const { data, error } = await supabase
     .from(TABLE)
     .insert({
@@ -297,6 +340,7 @@ export async function createNote({ title, content, projectKey, sourceType, tags,
       recipient: recipient || null,
       created_by_label: createdByLabel || null,
       reply_to_note_id: replyToNoteId || null,
+      task_line_id: taskLineId || null,
     })
     .select()
     .single()
@@ -310,8 +354,8 @@ export async function createNote({ title, content, projectKey, sourceType, tags,
 // created_by_label in particular is writable at creation (id=432 §〇) but
 // that grant doesn't extend to UPDATE, so passing it here would just fail
 // at the DB regardless.
-const EDITABLE_FIELDS = ['title', 'content', 'projectKey', 'sourceType', 'recipient', 'tags', 'replyToNoteId']
-const FIELD_TO_COLUMN = { projectKey: 'project_key', sourceType: 'source_type', replyToNoteId: 'reply_to_note_id' }
+const EDITABLE_FIELDS = ['title', 'content', 'projectKey', 'sourceType', 'recipient', 'tags', 'replyToNoteId', 'taskLineId']
+const FIELD_TO_COLUMN = { projectKey: 'project_key', sourceType: 'source_type', replyToNoteId: 'reply_to_note_id', taskLineId: 'task_line_id' }
 
 export async function updateNote(id, fields) {
   const payload = {}

@@ -23,6 +23,8 @@ import {
   scanReplyTree,
   findPendingLeaves,
   listGlobalPendingBalls,
+  listTaskLines,
+  getTaskLineLastActivity,
 } from './whiteboard.js'
 import { loadDraft, saveDraft, clearDraft } from './draft.js'
 import { loadSortPref, saveSortPref } from './sortPref.js'
@@ -90,8 +92,31 @@ let currentSession = null
 // id=445§⑤: sort is seeded from sessionStorage so it survives an F5 reload
 // (a plain module-level default here would reset every reload — the module
 // itself re-executes from scratch on a full page reload).
-let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: loadSortPref(), relayed: '' }
+let filters = { projectKey: '', status: '', source: '', tags: [], trash: false, from: '', to: '', search: '', sort: loadSortPref(), relayed: '', taskLineId: '' }
 let activeNoteId = null
+// id=1963: task_lines is small (37 rows), rarely changes, and is read by
+// both Compose (dropdown) and the whiteboard filter panel — loaded once on
+// first use and shared, rather than each caller re-querying it separately.
+let taskLines = []
+let taskLinesLoadPromise = null
+function ensureTaskLines() {
+  if (!taskLinesLoadPromise) {
+    taskLinesLoadPromise = listTaskLines()
+      .then((lines) => {
+        taskLines = lines
+        return lines
+      })
+      .catch((err) => {
+        taskLinesLoadPromise = null
+        throw err
+      })
+  }
+  return taskLinesLoadPromise
+}
+function taskLineDisplayName(id) {
+  const line = taskLines.find((l) => l.id === id)
+  return line ? line.display_name : `#${id}`
+}
 let detailPanelEl = null
 // id=1874: getNoteById() fetches a fresh object for the detail panel — it is
 // never the same reference as the row's `note`, so a row-level copy/mark (or
@@ -272,6 +297,27 @@ function renderNoteForm({ startOpen }) {
   const toSelect = el('select', {}, [option('', '不指定'), ...buildRecipientOptions()])
   const tagEditor = buildTagChipEditor({ initialTags: [], onChange: () => { persistDraft(); updateMoreSummaryBadge() } })
 
+  // id=1963/1966: "所屬任務線" — must be a visible, editable dropdown, never
+  // a hidden/readonly prefilled field (id=490 附錄, confirmed after Scribe's
+  // reminder — not an informal assumption). Options load async (task_lines
+  // is a DB table, not a static list like PROJECT_KEYS/SOURCE_TYPES), so the
+  // select starts with just its blank option and is populated once
+  // ensureTaskLines() resolves; taskLineOptionsReady/pendingTaskLineValue
+  // below let a draft-restore or reply-prefill value "land" correctly
+  // whichever order that resolves relative to this async populate.
+  const taskLineSelect = el('select', {}, [option('', '未指定任務線')])
+  let taskLineOptionsReady = false
+  let pendingTaskLineValue = null
+  function applyTaskLineValue(value) {
+    if (taskLineOptionsReady) taskLineSelect.value = value
+    else pendingTaskLineValue = value
+  }
+  ensureTaskLines().then((lines) => {
+    taskLineSelect.replaceChildren(option('', '未指定任務線'), ...lines.map((l) => option(String(l.id), l.display_name)))
+    taskLineOptionsReady = true
+    if (pendingTaskLineValue !== null) taskLineSelect.value = pendingTaskLineValue
+  })
+
   // id=440 §一: which existing note (if any) this new note replies to. Not
   // persisted to the draft (unlike stagedFiles, this IS JSON-serializable,
   // but a reply relationship surviving a browser refresh days later would
@@ -299,6 +345,10 @@ function renderNoteForm({ startOpen }) {
     // defaults, same as a completed submit already does.
     toSelect.value = ''
     fromSelect.value = 'Human-Jenbin'
+    // id=1963: the task-line select gets the same reply-prefill (see
+    // startReply below) and so needs the same cancel-reset — it's part of
+    // "回覆對象" state, not an independent field the user set on their own.
+    taskLineSelect.value = ''
     persistDraft()
   })
   const replySearch = buildReplySearchField({
@@ -314,6 +364,7 @@ function renderNoteForm({ startOpen }) {
     if (PROJECT_KEYS.includes(draft.projectKey)) projectSelect.value = draft.projectKey
     if (SOURCE_TYPES.includes(draft.sourceType)) sourceSelect.value = draft.sourceType
     if (RECIPIENTS.includes(draft.recipient)) toSelect.value = draft.recipient
+    if (draft.taskLineId) applyTaskLineValue(String(draft.taskLineId))
     if (Array.isArray(draft.tags)) tagEditor.setTags(draft.tags)
   } else {
     fromSelect.value = 'Human-Jenbin'
@@ -327,11 +378,12 @@ function renderNoteForm({ startOpen }) {
       projectKey: projectSelect.value,
       sourceType: sourceSelect.value,
       recipient: toSelect.value,
+      taskLineId: taskLineSelect.value,
       tags: tagEditor.getTags(),
     })
   }
   ;[titleInput, contentInput].forEach((input) => input.addEventListener('input', persistDraft))
-  ;[fromSelect, projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
+  ;[fromSelect, projectSelect, sourceSelect, toSelect, taskLineSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
   // id=476§二.2: project/source/tags are the fields a draft can silently
   // carry across a reload while "更多分類" stays collapsed (its default) —
   // this keeps the summary itself honest about that instead of requiring
@@ -410,6 +462,7 @@ function renderNoteForm({ startOpen }) {
     const tags = tagEditor.getTags()
     const filesToUpload = stagedFiles
     const replyToNoteId = replyTarget ? replyTarget.id : null
+    const taskLineId = taskLineSelect.value ? Number(taskLineSelect.value) : null
 
     submitBtn.disabled = true
     try {
@@ -422,10 +475,12 @@ function renderNoteForm({ startOpen }) {
         createdByLabel: fromSelect.value,
         tags,
         replyToNoteId,
+        taskLineId,
       })
       titleInput.value = ''
       contentInput.value = ''
       toSelect.value = ''
+      taskLineSelect.value = ''
       tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
       // id=476§二.1: project/source were the two classification fields NOT
@@ -515,6 +570,10 @@ function renderNoteForm({ startOpen }) {
   // in), so it added no clarification value for anyone actually seeing it.
   const fromField = el('label', { class: 'field-label' }, [el('span', { text: '寄' }), fromSelect])
   const toField = el('label', { class: 'field-label' }, [el('span', { text: '收' }), toSelect])
+  // id=1963/1966: kept alongside 寄/收 rather than inside "更多分類" —
+  // that <details> starts collapsed, and the spec is explicit this field
+  // must never be effectively hidden behind an extra click.
+  const taskLineField = el('label', { class: 'field-label' }, [el('span', { text: '任務線' }), taskLineSelect])
   const moreFields = el('div', { class: 'row' }, [labeledField('專案', projectSelect), labeledField('來源', sourceSelect), tagField(tagEditor)])
   // id=440 §1.2: manual reply-target search — secondary entry point, lives
   // in "更多分類" since the primary entry is a row/detail "回覆" button
@@ -576,6 +635,7 @@ function renderNoteForm({ startOpen }) {
   form.appendChild(contentInput)
   form.appendChild(fromField)
   form.appendChild(toField)
+  form.appendChild(taskLineField)
   // id=435 §七: 附加檔案 (left) and 送出 (right) share one row.
   form.appendChild(el('div', { class: 'compose-submit-row' }, [attachFileBtn, submitBtn]))
   form.appendChild(stagedFilesRow)
@@ -616,6 +676,14 @@ function renderNoteForm({ startOpen }) {
     // never clobbers their pick.
     if (!toSelect.value && note.created_by_label && RECIPIENTS.includes(note.created_by_label)) {
       toSelect.value = note.created_by_label
+      persistDraft()
+    }
+    // id=1963 §1: reply cards prefill the parent's task_line_id as a
+    // *default*, not a lock — same "only if the user hasn't already chosen
+    // one" guard as 收 above, and still freely changeable/clearable
+    // afterward since this is a plain <select>, not a readonly field.
+    if (!taskLineSelect.value && note.task_line_id) {
+      applyTaskLineValue(String(note.task_line_id))
       persistDraft()
     }
     details.open = true
@@ -1120,6 +1188,11 @@ function renderFilters(listMount) {
     class: 'trash-toggle',
     text: filters.trash ? '返回白板' : '垃圾桶',
   })
+  // id=1963 §2: 任務線 filter panel — a separate toggle from 篩選's popover
+  // since each line needs a computed "靜止天數" badge (whiteboard.js's
+  // getTaskLineLastActivity), not just a plain value a <select> can hold.
+  const taskLinePanelToggle = el('button', { type: 'button', class: 'filter-toggle', text: '任務線' })
+  const taskLinePanel = el('div', { class: 'task-line-panel hidden' })
 
   const projectSelect = el('select', {}, [option('', '全部專案'), ...PROJECT_KEYS.map((k) => option(k, projectLabel(k)))])
   // id=472§三: aligned with the 4-tab STATUS_TABS set (adds 已萃取), not the
@@ -1200,6 +1273,112 @@ function renderFilters(listMount) {
     const wasHidden = popover.classList.contains('hidden')
     popover.classList.toggle('hidden')
     if (wasHidden) commonTagsBlock.reload()
+  })
+
+  // id=1963 §2: 靜止天數 (idle days) per line — most recent
+  // work_whiteboard.created_at for that task_line_id, client-side reduced
+  // by whiteboard.js's getTaskLineLastActivity(). null means the line has
+  // no cards yet (id=1963's #427/#455 pending-backfill case, or any future
+  // empty line) — never treated as "0 days idle", which would misread as
+  // freshly active.
+  let taskLineActivity = new Map()
+  let taskLineSortDesc = true // true = 最久未動優先 (default), false = 最新優先
+
+  function idleDaysFor(id) {
+    const lastCreatedAt = taskLineActivity.get(id)
+    if (!lastCreatedAt) return null
+    return Math.max(0, Math.floor((Date.now() - new Date(lastCreatedAt).getTime()) / 86400000))
+  }
+
+  // 3-tier freshness per id=1963's explicit ranges (1-3 / 4-10 / 11+ 天) —
+  // deliberately coarse ("非精確急迫度判斷"), so this is a display tier only,
+  // never fed back into sorting logic (sorting uses the exact day count).
+  function freshnessTier(days) {
+    if (days === null) return 'none'
+    if (days <= 3) return 'fresh'
+    if (days <= 10) return 'warm'
+    return 'stale'
+  }
+
+  function renderTaskLineRows() {
+    const sorted = [...taskLines].sort((a, b) => {
+      const da = idleDaysFor(a.id)
+      const db = idleDaysFor(b.id)
+      // Lines with no cards yet sort last regardless of direction — there's
+      // no idle-days value to rank them by, and burying them at the bottom
+      // keeps "哪條線最久沒動" from being dominated by simply-empty lines.
+      if (da === null && db === null) return 0
+      if (da === null) return 1
+      if (db === null) return -1
+      return taskLineSortDesc ? db - da : da - db
+    })
+    taskLinePanel.replaceChildren(
+      el('div', { class: 'task-line-panel-header' }, [
+        el('span', { class: 'task-line-panel-title', text: '依任務線篩選' }),
+        el('button', {
+          type: 'button',
+          class: 'task-line-sort-toggle',
+          text: taskLineSortDesc ? '排序：最久未動優先' : '排序：最新優先',
+          onclick: () => {
+            taskLineSortDesc = !taskLineSortDesc
+            renderTaskLineRows()
+          },
+        }),
+      ]),
+      el(
+        'ul',
+        { class: 'task-line-list' },
+        sorted.map((line) => {
+          const days = idleDaysFor(line.id)
+          const tier = freshnessTier(days)
+          const isActive = filters.taskLineId === line.id
+          return el('li', {}, [
+            el(
+              'button',
+              {
+                type: 'button',
+                class: 'task-line-row' + (isActive ? ' active' : ''),
+                onclick: () => {
+                  // Clicking the already-active line clears the filter —
+                  // same toggle convention as the status quick-tabs
+                  // (setStatusFilterFn below).
+                  filters = { ...filters, taskLineId: isActive ? '' : line.id }
+                  renderTaskLineRows()
+                  renderChips()
+                  refreshList(listMount)
+                },
+              },
+              [
+                el('span', { class: 'task-line-name', text: line.display_name }),
+                el('span', {
+                  class: `task-line-freshness task-line-freshness-${tier}`,
+                  text: days === null ? '尚無卡片' : `靜止 ${days} 天`,
+                }),
+              ]
+            ),
+          ])
+        })
+      )
+    )
+  }
+
+  async function loadTaskLinePanel() {
+    taskLinePanel.replaceChildren(el('p', { class: 'task-line-panel-loading', text: '載入中…' }))
+    try {
+      const [, activity] = await Promise.all([ensureTaskLines(), getTaskLineLastActivity()])
+      taskLineActivity = activity
+      renderTaskLineRows()
+    } catch (err) {
+      taskLinePanel.replaceChildren(el('p', { class: 'error', text: friendlyErrorMessage(err) }))
+    }
+  }
+
+  // Reloads every open (same convention as commonTagsBlock.reload() above)
+  // so idle-day counts don't go stale across a long-lived session.
+  taskLinePanelToggle.addEventListener('click', () => {
+    const wasHidden = taskLinePanel.classList.contains('hidden')
+    taskLinePanel.classList.toggle('hidden')
+    if (wasHidden) loadTaskLinePanel()
   })
 
   // Status is deliberately NOT included here — it has its own setStatus()
@@ -1354,9 +1533,10 @@ function renderFilters(listMount) {
     toSelect.value = ''
     relayedSelect.value = ''
     tagFilterEditor.setTags([])
-    filters = { ...filters, tags: [], status: '' }
+    filters = { ...filters, tags: [], status: '', taskLineId: '' }
     statusSelect.value = ''
     apply()
+    renderTaskLineRows()
     if (statusTabsRef) statusTabsRef.updateActive()
   }
 
@@ -1393,8 +1573,9 @@ function renderFilters(listMount) {
     toSelect.value = ''
     relayedSelect.value = ''
     tagFilterEditor.setTags([tag])
-    filters = { ...filters, projectKey: '', status: '', source: '', from: '', to: '', search: '', relayed: '', tags: [tag] }
+    filters = { ...filters, projectKey: '', status: '', source: '', from: '', to: '', search: '', relayed: '', taskLineId: '', tags: [tag] }
     renderChips()
+    renderTaskLineRows()
     refreshList(listMount)
     if (statusTabsRef) statusTabsRef.updateActive()
   }
@@ -1424,6 +1605,16 @@ function renderFilters(listMount) {
     if (filters.from) chips.push(['寄: ' + recipientLabel(filters.from), () => clearOne('from', fromSelect, '')])
     if (filters.to) chips.push(['收: ' + (filters.to === UNSET_RECIPIENT ? '未指名' : recipientLabel(filters.to)), () => clearOne('to', toSelect, '')])
     if (filters.relayed) chips.push(['轉達狀態: ' + (filters.relayed === 'relayed' ? '已轉達' : '未轉達'), () => clearOne('relayed', relayedSelect, '')])
+    if (filters.taskLineId)
+      chips.push([
+        '任務線: ' + taskLineDisplayName(filters.taskLineId),
+        () => {
+          filters = { ...filters, taskLineId: '' }
+          renderTaskLineRows()
+          renderChips()
+          refreshList(listMount)
+        },
+      ])
     filters.tags.forEach((t) => chips.push(['標籤: ' + displayTag(t), () => removeTagFromFilter(t)]))
 
     chipsRow.replaceChildren(
@@ -1467,8 +1658,8 @@ function renderFilters(listMount) {
     refreshList(listMount)
   })
 
-  const bar = el('div', { class: 'filter-bar' }, [searchInput, filterToggle, trashToggle])
-  return el('div', { class: 'filters' }, [bar, popover, chipsRow])
+  const bar = el('div', { class: 'filter-bar' }, [searchInput, filterToggle, taskLinePanelToggle, trashToggle])
+  return el('div', { class: 'filters' }, [bar, popover, taskLinePanel, chipsRow])
 }
 
 function hasActiveFilters() {
@@ -1480,6 +1671,7 @@ function hasActiveFilters() {
     filters.to ||
     filters.search ||
     filters.relayed ||
+    filters.taskLineId ||
     (filters.tags && filters.tags.length)
   )
 }
@@ -1496,6 +1688,7 @@ function buildListParams() {
     search: filters.search,
     sort: filters.sort,
     relayed: filters.relayed,
+    taskLineId: filters.taskLineId,
   }
 }
 
