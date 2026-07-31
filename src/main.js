@@ -3463,6 +3463,10 @@ let globalTacticalExpandedLanes = new Set()
 // 'stalest' is the new pure-MIN(created_at) mode. Resets to the default on
 // close, same convention as the filter/expand state above.
 let globalTacticalSortMode = 'count'
+// id=1973 第1階: which dimension lanes are grouped by — 'recipient' is the
+// unchanged §一 default, 'task_line' is the new parallel grouping. Resets to
+// the default on close, same convention as sort mode above.
+let globalTacticalGroupMode = 'recipient'
 // §十: toggling sort mode is a pure re-render over already-fetched data, not
 // a new query (spec says so explicitly) — these cache the last successful
 // fetch so the toggle buttons don't trigger a redundant SELECT.
@@ -3476,10 +3480,19 @@ let globalTacticalLastQueriedAt = null
 const GLOBAL_LANE_CAP = 20
 const GLOBAL_LANE_PREVIEW_CAP = 5
 
+// id=1973 第1階: task-line lane grouping's own "unassigned" sentinel — same
+// underlying value as UNSET_RECIPIENT (not a coincidence: sortGlobalLanes'
+// unassigned-first comparator checks `key === UNSET_RECIPIENT` and is shared
+// unmodified by both grouping modes, per the spec's explicit "兩種分組模式共
+// 用同一套排序函式" — this is what makes that sharing work without the
+// comparator needing to know which dimension it's sorting).
+const UNSET_TASK_LINE = UNSET_RECIPIENT
+
 function closeGlobalTacticalPanel() {
   globalTacticalLoadSeq += 1
   globalTacticalExpandedLanes = new Set()
   globalTacticalSortMode = 'count'
+  globalTacticalGroupMode = 'recipient'
   globalTacticalLastBalls = null
   globalTacticalLastQueriedAt = null
   if (!globalTacticalPanelEl) return
@@ -3530,6 +3543,30 @@ function groupGlobalBalls(balls) {
   return Array.from(map.entries()).map(([key, laneBalls]) => ({
     key,
     label: key === UNSET_RECIPIENT ? '未指派' : recipientLabel(key),
+    balls: laneBalls,
+    oldestCreatedAt: Math.min(...laneBalls.map((b) => new Date(b.created_at).getTime())),
+  }))
+}
+
+// id=1973 第1階: task_line_id → one lane per group, parallel to
+// groupGlobalBalls above (same UNSET_TASK_LINE/oldestCreatedAt shape) so
+// renderGlobalTacticalBody can treat either grouping's output identically.
+// task_line_display_name comes straight off the view row (id=1973's SELECT
+// widening) — no separate task_lines lookup needed here.
+function groupGlobalBallsByTaskLine(balls) {
+  const map = new Map()
+  balls.forEach((b) => {
+    const key = b.task_line_id || UNSET_TASK_LINE
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(b)
+  })
+  return Array.from(map.entries()).map(([key, laneBalls]) => ({
+    key,
+    // Falls back to the raw id if task_line_display_name is ever missing
+    // (an orphaned FK the view's LEFT JOIN can't resolve) — same "never a
+    // blank label" defensiveness as globalBallCrossTagLabel below, rather
+    // than trusting the join to always resolve.
+    label: key === UNSET_TASK_LINE ? '未歸線' : laneBalls[0].task_line_display_name || `任務線 #${key}`,
     balls: laneBalls,
     oldestCreatedAt: Math.min(...laneBalls.map((b) => new Date(b.created_at).getTime())),
   }))
@@ -3613,10 +3650,21 @@ function renderGlobalConstellation(lanes) {
   return el('div', { class: 'global-constellation' }, nodes)
 }
 
+// id=1973 第1階 §5: the "other" dimension's label, shown as a small tag on
+// every ball row so the two dimensions' cross-reference is visible without a
+// real 2D matrix (explicitly deferred to 第2階). Same "未指派"/"未歸線"
+// wording as the two grouping functions above, so a ball reads the same
+// whichever mode surfaces it.
+function globalBallCrossTagLabel(ball) {
+  if (globalTacticalGroupMode === 'task_line') return ball.recipient ? recipientLabel(ball.recipient) : '未指派'
+  return ball.task_line_display_name || '未歸線'
+}
+
 function renderGlobalBallRow(ball) {
   const row = el('button', { type: 'button', class: 'global-ball-row' }, [
     el('span', { class: 'global-ball-id', text: '#' + ball.note_id }),
     el('span', { class: 'global-ball-title', text: truncateForNode(noteTitleOrExcerpt(ball)) }),
+    el('span', { class: 'global-ball-crosstag', text: globalBallCrossTagLabel(ball) }),
   ])
   // §三: clicking an individual ball reuses the existing single-chain
   // tactical board — not a new interaction, not a note-detail navigation.
@@ -3662,7 +3710,10 @@ function renderGlobalLane(lane, queriedAt) {
 function renderGlobalLaneList(lanes, overflowCount, queriedAt) {
   const children = lanes.map((lane) => renderGlobalLane(lane, queriedAt))
   if (overflowCount > 0) {
-    children.push(el('p', { class: 'global-lane-overflow', text: `還有 ${overflowCount} 個收件人群組未顯示於此畫面` }))
+    // id=1973 第1階: the overflow message names the grouping dimension, so
+    // it stays accurate under 任務線 grouping too (was hardcoded to 收件人).
+    const groupNoun = globalTacticalGroupMode === 'task_line' ? '任務線' : '收件人'
+    children.push(el('p', { class: 'global-lane-overflow', text: `還有 ${overflowCount} 個${groupNoun}群組未顯示於此畫面` }))
   }
   return el('div', { class: 'global-lane-list' }, children)
 }
@@ -3694,12 +3745,47 @@ function renderGlobalSortToggle() {
   return el('div', { class: 'global-sort-toggle', role: 'group', 'aria-label': '排序方式' }, buttons)
 }
 
+// id=1973 第1階: same toggle-button convention as renderGlobalSortToggle
+// above (a pure re-render over cached data, no new query) — parallel
+// dimension, not a rewrite of the sort toggle's mechanics.
+function renderGlobalGroupToggle() {
+  const modes = [
+    { key: 'recipient', label: '收件人' },
+    { key: 'task_line', label: '任務線' },
+  ]
+  const buttons = modes.map(({ key, label }) =>
+    el('button', {
+      type: 'button',
+      class: 'global-sort-btn' + (globalTacticalGroupMode === key ? ' active' : ''),
+      'aria-pressed': globalTacticalGroupMode === key ? 'true' : 'false',
+      text: label,
+    })
+  )
+  buttons.forEach((btn, i) => {
+    btn.addEventListener('click', () => {
+      const key = modes[i].key
+      if (globalTacticalGroupMode === key) return
+      globalTacticalGroupMode = key
+      if (globalTacticalLastBalls) renderGlobalTacticalBody(globalTacticalLastBalls, globalTacticalLastQueriedAt)
+    })
+  })
+  return el('div', { class: 'global-group-toggle', role: 'group', 'aria-label': '分組依據' }, [
+    el('span', { class: 'global-group-toggle-label', text: '分組依據：' }),
+    ...buttons,
+  ])
+}
+
 // Shared by the initial load/refresh path AND the sort-toggle's cache-only
 // re-render — the only difference is whether `balls` just came off the wire
 // or is the last fetch's cached copy (§十.10.1.2: toggling sort is not a
 // new query).
 function renderGlobalTacticalBody(balls, queriedAt) {
-  const allLanes = groupGlobalBalls(balls)
+  // id=1973 第1階: which grouping function runs is the only branch this
+  // adds — sortGlobalLanes/renderGlobalConstellation/renderGlobalLaneList
+  // below are all unaware of which dimension produced their lanes, since
+  // both grouping functions return the same {key,label,balls,oldestCreatedAt}
+  // shape.
+  const allLanes = globalTacticalGroupMode === 'task_line' ? groupGlobalBallsByTaskLine(balls) : groupGlobalBalls(balls)
 
   if (allLanes.length === 0) {
     renderGlobalTacticalShell([
@@ -3720,6 +3806,9 @@ function renderGlobalTacticalBody(balls, queriedAt) {
 
   renderGlobalTacticalShell([
     globalTacticalHeader({ withRefresh: true, queriedAt }),
+    // id=1973 第1階: sits right under the header, ahead of the constellation
+    // — which dimension is grouped by is the first thing to orient on.
+    renderGlobalGroupToggle(),
     // §十.10.1.3: 星座摘要不變動 — same renderGlobalConstellation as before,
     // unaware of sort mode (it always arranges by count internally, per §二).
     renderGlobalConstellation(lanes),

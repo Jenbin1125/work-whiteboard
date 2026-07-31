@@ -1030,6 +1030,12 @@ body.body-scroll-locked { overflow: hidden; }
 .global-sort-btn.active { border-color: #d97706; color: #92400e; background: #fffbeb; }
 .global-sort-btn:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
 
+/* id=1973 第1階: grouping-dimension toggle — same button styling as
+   .global-sort-btn (reuses that class directly), just its own row with a
+   leading label so it doesn't read as another sort control. */
+.global-group-toggle { display: flex; align-items: center; gap: 0.4rem; margin: 0.25rem 0; }
+.global-group-toggle-label { font-size: 0.78rem; color: #666; }
+
 /* §三: the main operating surface — collapsed lane shows label + amber
    count badge; expanded reveals a capped preview of individual balls. */
 .global-lane-list { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -1077,6 +1083,18 @@ body.body-scroll-locked { overflow: hidden; }
 .global-ball-row:first-child { border-top: none; }
 .global-ball-row:focus-visible { outline: 2px solid #0f766e; outline-offset: -2px; }
 .global-ball-id { color: #888; font-size: 0.75rem; flex-shrink: 0; }
+/* id=1973 第1階 §5: the "other" grouping dimension's small tag on each ball
+   row — same neutral/muted treatment as .global-lane-wait (a fact, not a
+   severity signal), pinned to the row's trailing edge. */
+.global-ball-crosstag {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: #888;
+  background: #f3f4f6;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+}
 .global-lane-more,
 .global-lane-overflow { margin: 0 0.85rem 0.6rem; font-size: 0.75rem; color: #888; }
 .global-lane-overflow { margin: 0.4rem 0 0; }

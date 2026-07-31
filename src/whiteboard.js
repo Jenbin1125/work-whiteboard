@@ -276,7 +276,11 @@ export function findPendingLeaves(nodesById, childrenOf) {
 // only, matching this view's grants (§6 gate already verified RLS gates it
 // correctly for real JWTs — see id=453§6/§7).
 const GLOBAL_BALLS_VIEW = 'v_global_pending_balls'
-const GLOBAL_BALLS_COLUMNS = 'note_id, title, recipient, status, task_type_hint, created_at, updated_at, reply_to_note_id, queried_at'
+// id=1973 第1階: task_line_id/task_line_key/task_line_display_name added —
+// the view already exposes them (id=1963 第0階 backfill), this just widens
+// the SELECT so main.js's task-line grouping mode has what it needs.
+const GLOBAL_BALLS_COLUMNS =
+  'note_id, title, recipient, status, task_type_hint, created_at, updated_at, reply_to_note_id, queried_at, task_line_id, task_line_key, task_line_display_name'
 
 export async function listGlobalPendingBalls() {
   const { data, error } = await supabase.from(GLOBAL_BALLS_VIEW).select(GLOBAL_BALLS_COLUMNS).order('created_at', { ascending: true })
