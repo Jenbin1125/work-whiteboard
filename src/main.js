@@ -2044,9 +2044,17 @@ function renderRow(note, mount) {
   // relevance at a glance. Non-🏈 notes, and 🏈 notes where extraction
   // fails, keep the exact prior fallback (id=438 §一.2 優雅降級).
   const topicText = extractFootballPreview(note.content) || noteTitleOrExcerpt(note)
+  // id=2006: native title attribute for hover — full text, not the capped
+  // preview above (🏈 cards would otherwise still show a truncated tooltip,
+  // just via a different mechanism). noteTitleOrExcerpt is already
+  // uncapped, so non-🏈 cards get the same text both places.
+  const topicFullText = extractFootballPreview(note.content, { capped: false }) || noteTitleOrExcerpt(note)
   const hintDot = taskTypeHintDot(note)
   const topicTextEl = el('span', { text: topicText })
-  const topicEl = el('span', { class: 'wb-topic' }, hintDot ? [hintDot, topicTextEl] : [topicTextEl])
+  // id=2006: title lives on topicEl (the .wb-topic wrapper), not
+  // topicTextEl, so it triggers consistently whether or not hintDot is
+  // present — hovering anywhere over the topic, not just the text span.
+  const topicEl = el('span', { class: 'wb-topic', title: topicFullText }, hintDot ? [hintDot, topicTextEl] : [topicTextEl])
   // id=435 §四.1: reverts §三.3 — tags go back to their own line below
   // Topic (Human found the shared-line width too cramped in practice).
   // id=1980: task-line badge sits between Topic and the tag chips.
