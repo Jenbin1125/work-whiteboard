@@ -59,6 +59,22 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .field-label select, .field-label input { flex: 1; padding: 0.4rem; font-size: 0.9rem; }
 .field-label-compact { flex-direction: column; align-items: stretch; gap: 0.2rem; min-width: 140px; flex: 1; }
 
+/* id=1981/1982: Compose's task-line ✕ clear button — same small icon-button
+   weight as .reply-target-chip button/.tag-chip button, just standalone
+   rather than nested in a chip. .hidden (global utility) drives 加分2's
+   show/hide; flex-shrink so it never fights taskLineSelect's flex:1 above. */
+.task-line-clear-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  color: #556;
+  cursor: pointer;
+}
+.task-line-clear-btn:hover { background: #f2f4f6; }
+
 .compose-more { margin: 0.5rem 0; border-top: 1px solid #eee; padding-top: 0.5rem; }
 .compose-more summary { font-size: 0.85rem; color: #555; cursor: pointer; }
 .compose-more .row { margin-top: 0.5rem; }
@@ -561,6 +577,26 @@ body.lightbox-scroll-locked { overflow: hidden; }
 }
 .row-tag-chip:hover { background: #dfe3e8; }
 .row-tag-overflow { font-size: 0.7rem; color: #888; }
+
+/* id=1980: task-line badge — same size/weight class as .row-tag-chip but a
+   distinct teal hue (the app's existing accent color, e.g. .task-line-row.
+   active/.status-tab.active use #0f766e) so it reads as "this is a task
+   line", not "this is a tag", at a glance. Own line above the tag row
+   rather than sharing .wb-row-tags, since it's a single badge, not a chip
+   list. */
+.wb-row-task-line { display: flex; margin-bottom: 0.2rem; }
+.row-task-line-chip {
+  background: #e3f4f2;
+  color: #0f766e;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.row-task-line-chip:hover { background: #cdeae6; }
+/* id=1982 加分1: this row's line is the active list filter. */
+.row-task-line-chip.active { border-color: #0f766e; font-weight: 600; }
 
 /* Tag chip editor (id=433 §一/§二/§六): shared by Compose, detail edit form,
    and the filter popover's tag multi-select. */

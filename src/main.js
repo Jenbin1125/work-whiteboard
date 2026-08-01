@@ -146,6 +146,14 @@ let replaceFilterWithTagFn = null
 // quick-tabs <-> filter popover's status <select> staying in sync regardless
 // of which one triggered the change.
 let setStatusFilterFn = null
+// id=1980/1981: same lazy-binding pattern again — lets Compose's taskLine
+// select (id=1981) and a row's task-line badge (id=1980) both drive
+// filters.taskLineId without threading renderFilters' closures through
+// renderNoteForm/renderRow's call chains. Unlike replaceFilterWithTagFn,
+// this only ever sets taskLineId — never clears the other filters (id=1981
+// §五 is explicit this must read as the same "選任務線" action wherever it's
+// triggered from, including the task-line panel's own click handler).
+let jumpToTaskLineFilterFn = null
 let statusTabsRef = null
 // id=440: set by renderBoard() each render; lets a row's or the detail
 // panel's "回覆" button reach into Compose's reply-target state without
@@ -303,20 +311,61 @@ function renderNoteForm({ startOpen }) {
   // is a DB table, not a static list like PROJECT_KEYS/SOURCE_TYPES), so the
   // select starts with just its blank option and is populated once
   // ensureTaskLines() resolves; taskLineOptionsReady/pendingTaskLineValue
-  // below let a draft-restore or reply-prefill value "land" correctly
-  // whichever order that resolves relative to this async populate.
+  // below let a reply-prefill value (see selectTaskLineAndFilter) "land"
+  // correctly whichever order that resolves relative to this async populate.
   const taskLineSelect = el('select', {}, [option('', '未指定任務線')])
   let taskLineOptionsReady = false
   let pendingTaskLineValue = null
+  // Low-level primitive: only ever sets the <select>'s value (handling the
+  // options-not-loaded-yet race). id=1981 §三 入口2: selectTaskLineAndFilter
+  // below is what callers actually use — it wraps this with the live-filter
+  // side effect. Kept separate rather than inlined so that branching logic
+  // isn't duplicated between the sync and async-pending paths.
   function applyTaskLineValue(value) {
     if (taskLineOptionsReady) taskLineSelect.value = value
     else pendingTaskLineValue = value
   }
+  // id=1981/1982: reply prefill is the one caller left that can race ahead
+  // of task_lines finishing its load — the ✕-visibility must reflect
+  // whichever value actually lands, sync or async, so it's re-evaluated
+  // here too, not just at selectTaskLineAndFilter's own call site.
   ensureTaskLines().then((lines) => {
     taskLineSelect.replaceChildren(option('', '未指定任務線'), ...lines.map((l) => option(String(l.id), l.display_name)))
     taskLineOptionsReady = true
-    if (pendingTaskLineValue !== null) taskLineSelect.value = pendingTaskLineValue
+    if (pendingTaskLineValue !== null) {
+      taskLineSelect.value = pendingTaskLineValue
+      updateTaskLineClearVisibility()
+    }
   })
+  // id=1981/1982 加分2: hidden/disabled until a task line is actually
+  // selected — starts hidden since 第0.5階's draft exclusion (below) means
+  // taskLineSelect always boots at "未指定任務線". Re-run at every point
+  // §1982 lists: manual change, reply prefill (both sync and the async-race
+  // branch above), and the clear paths below (which explicitly clear the
+  // value FIRST, then call this, per §1982's ordering note).
+  const taskLineClearBtn = el('button', {
+    type: 'button',
+    class: 'task-line-clear-btn hidden',
+    'aria-label': '清除任務線',
+    text: '✕',
+  })
+  function updateTaskLineClearVisibility() {
+    taskLineClearBtn.classList.toggle('hidden', !taskLineSelect.value)
+  }
+  taskLineClearBtn.addEventListener('click', () => {
+    taskLineSelect.value = ''
+    updateTaskLineClearVisibility()
+    if (jumpToTaskLineFilterFn) jumpToTaskLineFilterFn('')
+  })
+  // id=1981 §三 入口2: the only place a task line is set AND must also push
+  // the live-filter side effect (compose入口1's own dedicated change
+  // listener, defined below near taskLineSelect's other listeners, is the
+  // other one).
+  function selectTaskLineAndFilter(value) {
+    applyTaskLineValue(value)
+    updateTaskLineClearVisibility()
+    if (jumpToTaskLineFilterFn) jumpToTaskLineFilterFn(value)
+  }
 
   // id=440 §一: which existing note (if any) this new note replies to. Not
   // persisted to the draft (unlike stagedFiles, this IS JSON-serializable,
@@ -348,7 +397,12 @@ function renderNoteForm({ startOpen }) {
     // id=1963: the task-line select gets the same reply-prefill (see
     // startReply below) and so needs the same cancel-reset — it's part of
     // "回覆對象" state, not an independent field the user set on their own.
+    // id=1981 §四: also clears the live list filter it may have set — value
+    // first, then re-derive the ✕ button's visibility from it (§1982's
+    // explicit ordering note), then the filter side effect.
     taskLineSelect.value = ''
+    updateTaskLineClearVisibility()
+    if (jumpToTaskLineFilterFn) jumpToTaskLineFilterFn('')
     persistDraft()
   })
   const replySearch = buildReplySearchField({
@@ -364,7 +418,10 @@ function renderNoteForm({ startOpen }) {
     if (PROJECT_KEYS.includes(draft.projectKey)) projectSelect.value = draft.projectKey
     if (SOURCE_TYPES.includes(draft.sourceType)) sourceSelect.value = draft.sourceType
     if (RECIPIENTS.includes(draft.recipient)) toSelect.value = draft.recipient
-    if (draft.taskLineId) applyTaskLineValue(String(draft.taskLineId))
+    // id=1981 §二: taskLineId is deliberately never restored from a draft —
+    // see persistDraft below for why it's never saved there either. This is
+    // the one field a reload/reopen must always reset to "未指定任務線",
+    // full stop, regardless of what a stale draft remembers.
     if (Array.isArray(draft.tags)) tagEditor.setTags(draft.tags)
   } else {
     fromSelect.value = 'Human-Jenbin'
@@ -378,12 +435,29 @@ function renderNoteForm({ startOpen }) {
       projectKey: projectSelect.value,
       sourceType: sourceSelect.value,
       recipient: toSelect.value,
-      taskLineId: taskLineSelect.value,
       tags: tagEditor.getTags(),
     })
   }
+  // id=1981 §二: taskLineId is excluded from the draft entirely — same
+  // precedent as replyTarget just above (a reply relationship silently
+  // surviving days later would more likely confuse than help), plus a
+  // second reason unique to this field: it also drives the live list
+  // filter, so a silently-restored value wouldn't just be a stale form
+  // field, it would look like the list itself broke on its own. So
+  // taskLineSelect is deliberately NOT in this listener array — its own
+  // dedicated change listener (below) exists precisely so a real user
+  // selection still gets its live-filter side effect without also feeding
+  // persistDraft.
   ;[titleInput, contentInput].forEach((input) => input.addEventListener('input', persistDraft))
-  ;[fromSelect, projectSelect, sourceSelect, toSelect, taskLineSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
+  ;[fromSelect, projectSelect, sourceSelect, toSelect].forEach((sel) => sel.addEventListener('change', persistDraft))
+  // id=1981 §三 入口1: manual selection is the other real-user-action entry
+  // point (selectTaskLineAndFilter above is the other, for reply prefill).
+  // An empty value here just means "picked 未指定任務線 by hand", which
+  // reads as "clear the filter" with no special-casing needed.
+  taskLineSelect.addEventListener('change', () => {
+    updateTaskLineClearVisibility()
+    if (jumpToTaskLineFilterFn) jumpToTaskLineFilterFn(taskLineSelect.value || '')
+  })
   // id=476§二.2: project/source/tags are the fields a draft can silently
   // carry across a reload while "更多分類" stays collapsed (its default) —
   // this keeps the summary itself honest about that instead of requiring
@@ -481,6 +555,17 @@ function renderNoteForm({ startOpen }) {
       contentInput.value = ''
       toSelect.value = ''
       taskLineSelect.value = ''
+      // id=1981/1982: a plain .value assignment never fires 'change', so
+      // the ✕ button's visibility (normally kept in sync by that listener)
+      // needs its own explicit re-check here or it would keep showing
+      // after the field it belongs to has already reset. Deliberately NOT
+      // calling jumpToTaskLineFilterFn('') here — post-submit reset of the
+      // *field* was existing behavior, but whether the *list filter* should
+      // also reset isn't one of id=1981 §六's 6 acceptance scenarios, and
+      // "keep viewing the line I just added a card to" is a defensible
+      // reading too. Left as an open question for UI-Claude rather than
+      // silently deciding either way.
+      updateTaskLineClearVisibility()
       tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
       // id=476§二.1: project/source were the two classification fields NOT
@@ -573,7 +658,13 @@ function renderNoteForm({ startOpen }) {
   // id=1963/1966: kept alongside 寄/收 rather than inside "更多分類" —
   // that <details> starts collapsed, and the spec is explicit this field
   // must never be effectively hidden behind an extra click.
-  const taskLineField = el('label', { class: 'field-label' }, [el('span', { text: '任務線' }), taskLineSelect])
+  // id=1981: <div> not <label> — this field now wraps TWO interactive
+  // descendants (the select + the ✕ clear button), which is exactly the
+  // implicit label-activation risk replyField's own comment above already
+  // documents (a <label> synthesizes a click on its first labelable
+  // descendant whenever ANY of its labelable descendants is clicked) — same
+  // fix applied here rather than letting it reintroduce that bug class.
+  const taskLineField = el('div', { class: 'field-label' }, [el('span', { text: '任務線' }), taskLineSelect, taskLineClearBtn])
   const moreFields = el('div', { class: 'row' }, [labeledField('專案', projectSelect), labeledField('來源', sourceSelect), tagField(tagEditor)])
   // id=440 §1.2: manual reply-target search — secondary entry point, lives
   // in "更多分類" since the primary entry is a row/detail "回覆" button
@@ -678,13 +769,15 @@ function renderNoteForm({ startOpen }) {
       toSelect.value = note.created_by_label
       persistDraft()
     }
-    // id=1963 §1: reply cards prefill the parent's task_line_id as a
-    // *default*, not a lock — same "only if the user hasn't already chosen
-    // one" guard as 收 above, and still freely changeable/clearable
-    // afterward since this is a plain <select>, not a readonly field.
+    // id=1963 §1 / id=1981 §三 入口2: reply cards prefill the parent's
+    // task_line_id as a *default*, not a lock — same "only if the user
+    // hasn't already chosen one" guard as 收 above, still freely
+    // changeable/clearable afterward. selectTaskLineAndFilter (not the raw
+    // applyTaskLineValue primitive) is what pushes the live-filter side
+    // effect and keeps the ✕ button's visibility correct — no persistDraft
+    // call here since taskLineId no longer lives in the draft at all.
     if (!taskLineSelect.value && note.task_line_id) {
-      applyTaskLineValue(String(note.task_line_id))
-      persistDraft()
+      selectTaskLineAndFilter(String(note.task_line_id))
     }
     details.open = true
     details.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1588,8 +1681,31 @@ function renderFilters(listMount) {
     refreshList(listMount)
   }
 
+  // id=1980/1981 §五: unlike replaceFiltersWithTag above, this deliberately
+  // touches ONLY taskLineId — it must read as the same "選任務線" action
+  // whether triggered from Compose's own select, a row's task-line badge
+  // (id=1980), or the task-line panel's own click handler (which already
+  // does exactly this inline, just above in renderTaskLineRows), not a
+  // "clear everything else" reset like the tag-chip flow.
+  // Callers pass mixed types: a <select>'s .value is always a string
+  // (Compose's own change listener, reply-prefill's String(note.task_line_id)),
+  // while the task-line panel and a row's badge pass the numeric id straight
+  // off a DB row. Normalizing here — the one choke point every external
+  // caller goes through — keeps filters.taskLineId consistently numeric (or
+  // '' when cleared), so every `=== filters.taskLineId` comparison downstream
+  // (this row-badge/panel active-highlight, taskLineDisplayName's lookup in
+  // the filter chip) works regardless of which entry point set it.
+  function jumpToTaskLineFilter(taskLineId) {
+    const normalized = taskLineId === '' || taskLineId == null ? '' : Number(taskLineId)
+    filters = { ...filters, taskLineId: normalized }
+    renderTaskLineRows()
+    renderChips()
+    refreshList(listMount)
+  }
+
   addTagFilterFn = addTagToFilter
   replaceFilterWithTagFn = replaceFiltersWithTag
+  jumpToTaskLineFilterFn = jumpToTaskLineFilter
 
   // id=434 §五: lets the status quick-tabs (built alongside renderFilters in
   // renderBoard) drive the same filters.status the popover's <select> does —
@@ -1741,6 +1857,38 @@ function renderList(notes, mount) {
   if (!hasMoreNotes) return listEl
   const loadMoreBtn = el('button', { type: 'button', class: 'load-more-btn', text: '載入更多', onclick: () => loadMoreNotes(mount) })
   return el('div', {}, [listEl, loadMoreBtn])
+}
+
+// id=1980: which task line this card belongs to, right on the collapsed
+// row — #1963/#1973 covered the Compose dropdown, the filter panel, and the
+// tactical board's grouping, but never the row itself; a real gap Human
+// found by actually using the feature, not an implementation bug in those
+// tickets. Reuses the same taskLines cache Compose already populates
+// (ensureTaskLines/taskLineDisplayName) — no new query. No badge at all
+// when the note has no line, same "don't manufacture noise" call
+// buildRowTagChips below already makes for the no-tags case (never prints
+// "未歸線" on every untagged card).
+function buildRowTaskLineBadge(note) {
+  if (!note.task_line_id) return el('div')
+  // id=1982 加分1: highlighted when this row's line IS the active list
+  // filter — same "make the current selection visibly obvious" idea as
+  // applyTacticalRecipientFilter, just a static per-row class computed at
+  // render time instead of a live DOM re-scan (renderRow already re-runs
+  // on every refreshList, which is exactly when filters.taskLineId changes).
+  const isActive = !!filters.taskLineId && note.task_line_id === filters.taskLineId
+  const chip = el('button', {
+    type: 'button',
+    class: 'row-task-line-chip' + (isActive ? ' active' : ''),
+    text: taskLineDisplayName(note.task_line_id),
+    onclick: (e) => {
+      e.stopPropagation()
+      // Always sets (never toggles off on a second click) — same
+      // one-directional convention buildRowTagChips' tag chips already use;
+      // clearing goes through the filter chip / task-line panel instead.
+      if (jumpToTaskLineFilterFn) jumpToTaskLineFilterFn(note.task_line_id)
+    },
+  })
+  return el('div', { class: 'wb-row-task-line' }, [chip])
 }
 
 // id=429: horizontal inbox row. Collapsed = From/To badges + Topic + time
@@ -1903,7 +2051,8 @@ function renderRow(note, mount) {
   const topicEl = el('span', { class: 'wb-topic' }, hintDot ? [hintDot, topicTextEl] : [topicTextEl])
   // id=435 §四.1: reverts §三.3 — tags go back to their own line below
   // Topic (Human found the shared-line width too cramped in practice).
-  const topicBlock = el('div', { class: 'wb-row-topic-block' }, [topicEl, buildRowTagChips(note)])
+  // id=1980: task-line badge sits between Topic and the tag chips.
+  const topicBlock = el('div', { class: 'wb-row-topic-block' }, [topicEl, buildRowTaskLineBadge(note), buildRowTagChips(note)])
 
   const timeEl = el('span', { class: 'wb-time', text: formatCardTimestamp(note) })
 
