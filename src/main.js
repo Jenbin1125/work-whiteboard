@@ -558,14 +558,12 @@ function renderNoteForm({ startOpen }) {
       // id=1981/1982: a plain .value assignment never fires 'change', so
       // the ✕ button's visibility (normally kept in sync by that listener)
       // needs its own explicit re-check here or it would keep showing
-      // after the field it belongs to has already reset. Deliberately NOT
-      // calling jumpToTaskLineFilterFn('') here — post-submit reset of the
-      // *field* was existing behavior, but whether the *list filter* should
-      // also reset isn't one of id=1981 §六's 6 acceptance scenarios, and
-      // "keep viewing the line I just added a card to" is a defensible
-      // reading too. Left as an open question for UI-Claude rather than
-      // silently deciding either way.
+      // after the field it belongs to has already reset. id=1987: Human's
+      // ruling on the open question left in the previous round — post-submit
+      // also resets the live list filter back to "all", same as the field
+      // itself, rather than leaving it pointed at the line just posted to.
       updateTaskLineClearVisibility()
+      if (jumpToTaskLineFilterFn) jumpToTaskLineFilterFn('')
       tagEditor.setTags([])
       fromSelect.value = 'Human-Jenbin'
       // id=476§二.1: project/source were the two classification fields NOT
