@@ -59,22 +59,6 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .field-label select, .field-label input { flex: 1; padding: 0.4rem; font-size: 0.9rem; }
 .field-label-compact { flex-direction: column; align-items: stretch; gap: 0.2rem; min-width: 140px; flex: 1; }
 
-/* id=1981/1982: Compose's task-line ✕ clear button — same small icon-button
-   weight as .reply-target-chip button/.tag-chip button, just standalone
-   rather than nested in a chip. .hidden (global utility) drives 加分2's
-   show/hide; flex-shrink so it never fights taskLineSelect's flex:1 above. */
-.task-line-clear-btn {
-  flex-shrink: 0;
-  background: none;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.8rem;
-  color: #556;
-  cursor: pointer;
-}
-.task-line-clear-btn:hover { background: #f2f4f6; }
-
 .compose-more { margin: 0.5rem 0; border-top: 1px solid #eee; padding-top: 0.5rem; }
 .compose-more summary { font-size: 0.85rem; color: #555; cursor: pointer; }
 .compose-more .row { margin-top: 0.5rem; }

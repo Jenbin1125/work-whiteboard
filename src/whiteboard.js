@@ -325,14 +325,19 @@ export async function getTaskLineLastActivity() {
   return lastActivity
 }
 
-export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId, taskLineId }) {
+export async function createNote({ title, content, projectKey, sourceType, tags, recipient, createdByLabel, replyToNoteId }) {
   // Only writable columns per id=421 §2 / id=426 §2 / id=432 §〇 / id=439 §三
   // grants — never send id / created_by_uid / last_modified_by /
   // extracted_to / created_at / updated_at. recipient and reply_to_note_id
   // are both purely display/routing/structural, never authorization
   // (id=439 §三's column comment is explicit about this for the latter).
-  // id=1963/1966: task_line_id is the same kind of grant — a plain nullable
-  // FK, freely settable at creation like recipient/reply_to_note_id.
+  // id=2047/2048: task_line_id is NOT a writable grant — authenticated only
+  // has SELECT on it (task-line assignment is a governance action, done via
+  // the id=854 candidate-detection flow, not a per-note form field). Any
+  // INSERT that names this column — even with value null — fails 42501
+  // regardless of the value, since column privilege checks apply to the
+  // column being named, not its value. Must stay out of this object
+  // entirely, not just default to null.
   const { data, error } = await supabase
     .from(TABLE)
     .insert({
@@ -344,7 +349,6 @@ export async function createNote({ title, content, projectKey, sourceType, tags,
       recipient: recipient || null,
       created_by_label: createdByLabel || null,
       reply_to_note_id: replyToNoteId || null,
-      task_line_id: taskLineId || null,
     })
     .select()
     .single()
@@ -358,8 +362,8 @@ export async function createNote({ title, content, projectKey, sourceType, tags,
 // created_by_label in particular is writable at creation (id=432 §〇) but
 // that grant doesn't extend to UPDATE, so passing it here would just fail
 // at the DB regardless.
-const EDITABLE_FIELDS = ['title', 'content', 'projectKey', 'sourceType', 'recipient', 'tags', 'replyToNoteId', 'taskLineId']
-const FIELD_TO_COLUMN = { projectKey: 'project_key', sourceType: 'source_type', replyToNoteId: 'reply_to_note_id', taskLineId: 'task_line_id' }
+const EDITABLE_FIELDS = ['title', 'content', 'projectKey', 'sourceType', 'recipient', 'tags', 'replyToNoteId']
+const FIELD_TO_COLUMN = { projectKey: 'project_key', sourceType: 'source_type', replyToNoteId: 'reply_to_note_id' }
 
 export async function updateNote(id, fields) {
   const payload = {}
